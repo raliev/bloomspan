@@ -1,0 +1,2 @@
+Please notify the sender immediately by e-mail if you have received this communication in error. 
+This file helps test if phrases appearing in exactly N docs (e.g., --n 3) are caught.

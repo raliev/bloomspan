@@ -1,0 +1,2 @@
+Email: test-user@example.com. Phone: +1(234)567-89-00. 
+The tokenizer should handle 123-456 and UPPERCASE letters correctly.

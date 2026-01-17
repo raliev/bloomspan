@@ -21,20 +21,27 @@ int main(int argc, char** argv) {
     int ngrams = 4;
     int mem_limit = 0;
     int threads = 0;
+    int cache_size = 1000;
     double sampling = 1.0;
+    bool in_mem = false;
+    bool preload = false;
 
     for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--n" && i + 1 < argc) min_docs = std::stoi(argv[++i]);
-        else if (arg == "--ngrams" && i + 1 < argc) ngrams = std::stoi(argv[++i]);
-        else if (arg == "--mem" && i + 1 < argc) mem_limit = std::stoi(argv[++i]);
-        else if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
-        else if (arg == "--sampling" && i + 1 < argc) sampling = std::stod(argv[++i]);
-    }
+            std::string arg = argv[i];
+            if (arg == "--n" && i + 1 < argc) min_docs = std::stoi(argv[++i]);
+            else if (arg == "--ngrams" && i + 1 < argc) ngrams = std::stoi(argv[++i]);
+            else if (arg == "--mem" && i + 1 < argc) mem_limit = std::stoi(argv[++i]);
+            else if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
+            else if (arg == "--sampling" && i + 1 < argc) sampling = std::stod(argv[++i]);
+            else if (arg == "--cache" && i + 1 < argc) cache_size = std::stoi(argv[++i]);
+            else if (arg == "--in-mem") in_mem = true;
+            else if (arg == "--preload") preload = true;
+        }
 
     std::cout << "[START] Initializing Miner..." << std::endl;
+    if (in_mem) std::cout << "[MODE] Running in In-Memory mode (No Disk BIN)" << std::endl;
     CorpusMiner m;
-    m.set_limits(threads, mem_limit);
+    m.set_limits(threads, mem_limit, cache_size, in_mem, preload);
     m.load_directory(directory, sampling);
 
     std::cout << "[START] Beginning mining with min_docs=" << min_docs << ", ngrams=" << ngrams << std::endl;

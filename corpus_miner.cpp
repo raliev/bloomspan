@@ -16,6 +16,7 @@
 #include <omp.h>
 #include <queue>
 #include <memory>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
@@ -42,6 +43,32 @@ struct RawSeedEntry {
     }
 };
 
+const std::vector<uint32_t>& CorpusMiner::fetch_doc(uint32_t doc_id) const {
+
+    if (in_memory_only) {
+       return docs[doc_id];
+    }
+
+    std::lock_guard<std::mutex> lock(cache_mtx);
+
+    // 1. Check Cache
+    auto it = doc_cache.find(doc_id);
+    if (it != doc_cache.end()) return it->second;
+
+    // 2. Manage Cache Size (Simple FIFO/Random eviction)
+    if (doc_cache.size() >= max_cache_size) {
+        doc_cache.erase(doc_cache.begin());
+    }
+
+    // 3. Read from Disk
+    std::vector<uint32_t> doc(doc_lengths[doc_id]);
+    std::ifstream bin_in(bin_corpus_path, std::ios::binary);
+    bin_in.seekg(doc_offsets[doc_id]);
+    bin_in.read((char*)doc.data(), doc_lengths[doc_id] * sizeof(uint32_t));
+
+    return doc_cache[doc_id] = std::move(doc);
+}
+
 void CorpusMiner::load_directory(const std::string& path, double sampling) {
     auto total_start = start_timer();
 
@@ -66,6 +93,7 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
     if (max_threads > 0) omp_set_num_threads(max_threads);
     std::cout << "[LOG] Phase I: Parallel tokenization..." << std::endl;
     auto p1_start = start_timer();
+
     #pragma omp parallel for
     for (size_t i = 0; i < n; ++i) {
         std::ifstream file(paths[i], std::ios::binary);
@@ -78,40 +106,62 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
 
     std::cout << "[LOG] Phase II: Building dictionary, encoding ID, and counting DF..." << std::endl;
     auto p2_start = start_timer();
-    docs.reserve(n);
+    docs.clear();
+    if (in_memory_only) docs.reserve(n);
     file_paths.reserve(n);
 
     std::vector<uint32_t> word_last_doc_id;
     word_df.clear();
 
-    for (size_t i = 0; i < n; ++i) {
-        file_paths.push_back(paths[i].string());
-        std::vector<uint32_t> encoded;
-        encoded.reserve(raw_docs[i].size());
-
-        for (const auto& w : raw_docs[i]) {
-            uint32_t w_id;
-            auto it = word_to_id.find(w);
-            if (it == word_to_id.end()) {
-                w_id = id_to_word.size();
-                word_to_id[w] = w_id;
-                id_to_word.push_back(w);
-                word_df.push_back(0);
-                word_last_doc_id.push_back(0);
-            } else {
-                w_id = it->second;
-            }
-
-            encoded.push_back(w_id);
-
-            if (word_last_doc_id[w_id] != (uint32_t)i + 1) {
-                word_df[w_id]++;
-                word_last_doc_id[w_id] = (uint32_t)i + 1;
-            }
-        }
-        docs.push_back(std::move(encoded));
-        raw_docs[i].clear();
+    // Only open bin file if NOT in-memory mode
+    std::unique_ptr<std::ofstream> bin_out;
+    if (!in_memory_only) {
+        bin_out = std::make_unique<std::ofstream>(bin_corpus_path, std::ios::binary);
     }
+
+    for (size_t i = 0; i < n; ++i) {
+            file_paths.push_back(paths[i].string());
+            std::vector<uint32_t> encoded;
+            encoded.reserve(raw_docs[i].size());
+
+            for (const auto& w : raw_docs[i]) {
+                uint32_t w_id;
+                auto it = word_to_id.find(w);
+                if (it == word_to_id.end()) {
+                    w_id = id_to_word.size();
+                    word_to_id[w] = w_id;
+                    id_to_word.push_back(w);
+                    word_df.push_back(0);
+                    word_last_doc_id.push_back(0);
+                } else {
+                    w_id = it->second;
+                }
+                encoded.push_back(w_id);
+
+                if (word_last_doc_id[w_id] != (uint32_t)i + 1) {
+                    word_df[w_id]++;
+                    word_last_doc_id[w_id] = (uint32_t)i + 1;
+                }
+            }
+
+            doc_lengths.push_back(encoded.size());
+
+            if (in_memory_only) {
+                docs.push_back(std::move(encoded));
+            } else {
+                doc_offsets.push_back(bin_out->tellp());
+                bin_out->write((char*)encoded.data(), encoded.size() * sizeof(uint32_t));
+
+                // If preload is requested, keep in cache while building
+                if (preload_cache && doc_cache.size() < max_cache_size) {
+                    doc_cache[i] = encoded; // Copy before clearing
+                }
+                encoded.clear();
+            }
+            raw_docs[i].clear();
+        }
+    word_last_doc_id.clear();
+    word_last_doc_id.shrink_to_fit();
     stop_timer("Dictionary, Encoding & DF counting", p2_start);
     stop_timer("Total Loading", total_start);
 }
@@ -133,49 +183,72 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
     auto mine_start = start_timer();
     std::cout << "[LOG] Step 1: Gathering " << ngrams << "-gram seeds (Disk-based)..." << std::endl;
     auto s1_start = start_timer();
-
-    // Настройки дискового буфера
     std::string temp_dir = "./miner_tmp";
     fs::create_directories(temp_dir);
     std::vector<std::string> chunk_files;
-
     std::vector<RawSeedEntry> buffer;
-    // Лимит буфера: либо 500МБ, либо ваш лимит памяти минус оверхед
-    size_t max_buffer_bytes = (memory_limit_mb > 0) ? (memory_limit_mb * 1024 * 1024 * 0.7) : (512 * 1024 * 1024);
-    size_t max_buffer_entries = max_buffer_bytes / sizeof(RawSeedEntry);
-    buffer.reserve(max_buffer_entries);
+
+    buffer.reserve(1000000);
 
     int chunk_id = 0;
     auto flush_buffer = [&]() {
-        if (buffer.empty()) return;
-        std::sort(buffer.begin(), buffer.end(), [](const RawSeedEntry& a, const RawSeedEntry& b) {
+    if (buffer.empty()) return;
+    if (in_memory_only) return;
+
+        // Use a more descriptive log message to distinguish between
+        // a mid-process flush and the final flush.
+        std::cout << "\n[LOG] Flushing " << buffer.size() << " seeds to disk... (RAM: "
+                  << get_current_rss_mb() << " MB)" << std::endl;
+
+        std::sort(std::execution::par, buffer.begin(), buffer.end(), [](const RawSeedEntry& a, const RawSeedEntry& b) {
             for (int i = 0; i < a.n; ++i) {
                 if (a.tokens[i] != b.tokens[i]) return a.tokens[i] < b.tokens[i];
             }
+            // Ensure stable sort order for identical phrases
             if (a.doc_id != b.doc_id) return a.doc_id < b.doc_id;
             return a.pos < b.pos;
         });
-        std::string fname = temp_dir + "/chunk_" + std::to_string(chunk_id++) + ".bin";
-        std::ofstream out(fname, std::ios::binary);
-        out.write((char*)buffer.data(), buffer.size() * sizeof(RawSeedEntry));
-        chunk_files.push_back(fname);
-        buffer.clear();
-    };
 
-    // --- СБОР ДАННЫХ В ЧАНКИ ---
-    for (uint32_t d = 0; d < docs.size(); ++d) {
-        if (d % 500 == 0 || d == docs.size() - 1) {
-            std::cout << "[LOG] Scanning: " << (d + 1) << "/" << docs.size()
-                      << " | Chunks: " << chunk_id << " | RAM: " << get_current_rss_mb() << " MB\r" << std::flush;
+        // Generate unique filename
+        std::string fname = temp_dir + "/chunk_" + std::to_string(chunk_id++) + ".bin";
+
+        // CRITICAL FIX: Save the filename so Step 1.5 can find it
+        chunk_files.push_back(fname);
+
+        std::ofstream out(fname, std::ios::binary);
+        if (out) {
+            out.write((char*)buffer.data(), buffer.size() * sizeof(RawSeedEntry));
         }
 
-        if (g_stop_requested) break;
-        if (docs[d].size() < (size_t)ngrams) continue;
+        buffer.clear();
+        buffer.shrink_to_fit();
+    };
 
-        for (uint32_t p = 0; p <= docs[d].size() - ngrams; ++p) {
+    for (uint32_t d = 0; d < doc_lengths.size(); ++d) {
+            // Use 75% threshold to prevent OOM during peak sort operations
+            if (memory_limit_mb > 0 && get_current_rss_mb() >= (size_t)(memory_limit_mb * 0.75)) {
+                flush_buffer();
+            }
+        const auto& current_doc = fetch_doc(d);
+
+        if (current_doc.size() < (size_t)ngrams) continue;
+
+        // Check memory limits against total RSS
+        if (memory_limit_mb > 0 && get_current_rss_mb() >= (size_t)(memory_limit_mb * 0.9)) {
+            flush_buffer();
+        }
+
+        // Fix log: use doc_offsets.size() instead of docs.size()
+        if (d % 500 == 0 || d == doc_lengths.size() - 1) {
+                std::cout << "[LOG] Scanning: " << (d + 1) << "/" << doc_lengths.size()
+                          << " | Chunks: " << chunk_id << " | RAM: " << get_current_rss_mb() << " MB\r" << std::flush;
+            }
+
+        // Inner loop must use current_doc
+        for (uint32_t p = 0; p <= current_doc.size() - ngrams; ++p) {
             bool potentially_frequent = true;
             for (int i = 0; i < ngrams; ++i) {
-                if (word_df[docs[d][p + i]] < (uint32_t)min_docs) {
+                if (word_df[current_doc[p + i]] < (uint32_t)min_docs) {
                     potentially_frequent = false;
                     break;
                 }
@@ -183,109 +256,179 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
             if (!potentially_frequent) continue;
 
             RawSeedEntry entry;
+            std::memset(&entry, 0, sizeof(RawSeedEntry)); // Clear all bytes including padding
             entry.n = ngrams;
             entry.doc_id = d;
             entry.pos = p;
-            for (int i = 0; i < ngrams; ++i) entry.tokens[i] = docs[d][p + i];
-
+            for (int i = 0; i < ngrams; ++i) entry.tokens[i] = current_doc[p + i];
             buffer.push_back(entry);
-            if (buffer.size() >= max_buffer_entries) flush_buffer();
         }
     }
-    flush_buffer();
+    if (in_memory_only) {
+        std::cout << "[LOG] In-Memory Mode: Sorting all " << buffer.size() << " seeds in RAM..." << std::endl;
+        std::sort(std::execution::par, buffer.begin(), buffer.end(), [](const RawSeedEntry& a, const RawSeedEntry& b) {
+            for (int i = 0; i < a.n; ++i) {
+                if (a.tokens[i] != b.tokens[i]) return a.tokens[i] < b.tokens[i];
+            }
+            if (a.doc_id != b.doc_id) return a.doc_id < b.doc_id;
+            return a.pos < b.pos;
+        });
+    } else {
+        flush_buffer();
+    }
     std::cout << std::endl;
 
-    // --- СЛИЯНИЕ ЧАНКОВ (K-WAY MERGE) ---
-    std::cout << "[LOG] Step 1.5: Merging chunks and filtering candidates..." << std::endl;
-    std::vector<Phrase> candidates;
+    // --- START OF STEP 1.5 ---
+        std::cout << "[LOG] Step 1.5: Merging and filtering candidates..." << std::endl;
+        std::vector<Phrase> candidates;
 
-    struct ChunkReader {
-        std::ifstream stream;
-        RawSeedEntry current;
-        bool active;
-        bool next() {
-            if (!stream.read((char*)&current, sizeof(RawSeedEntry))) { active = false; return false; }
-            return true;
+        if (in_memory_only) {
+            // --- PATH A: In-Memory Processing ---
+            size_t i = 0;
+            while (i < buffer.size()) {
+                const RawSeedEntry& representative = buffer[i];
+                std::vector<Occurrence> current_occs;
+                std::unordered_set<uint32_t> unique_docs;
+
+                // Group identical tokens in the sorted RAM buffer
+                while (i < buffer.size() && buffer[i].same_tokens(representative)) {
+                    current_occs.push_back({buffer[i].doc_id, buffer[i].pos});
+                    unique_docs.insert(buffer[i].doc_id);
+                    i++;
+                }
+
+                // Support check (min_docs)
+                if (unique_docs.size() >= (size_t)min_docs) {
+                    std::vector<uint32_t> tokens_vec(ngrams);
+                    for(int k = 0; k < ngrams; ++k) tokens_vec[k] = representative.tokens[k];
+                    candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
+                }
+            }
+            // Free RAM immediately
+            buffer.clear();
+            buffer.shrink_to_fit();
+        } else {
+            // --- PATH B: Disk-Based External Merge ---
+            struct ChunkReader {
+                std::ifstream stream;
+                RawSeedEntry current;
+                bool active;
+                bool next() {
+                    if (!stream.read((char*)&current, sizeof(RawSeedEntry))) {
+                        active = false;
+                        return false;
+                    }
+                    return true;
+                }
+            };
+
+            auto cmp = [](ChunkReader* a, ChunkReader* b) { return a->current > b->current; };
+            std::priority_queue<ChunkReader*, std::vector<ChunkReader*>, decltype(cmp)> pq(cmp);
+            std::vector<std::unique_ptr<ChunkReader>> readers;
+
+            for (const auto& file : chunk_files) {
+                auto r = std::make_unique<ChunkReader>();
+                r->stream.open(file, std::ios::binary);
+                if (r->next()) {
+                    r->active = true;
+                    pq.push(r.get());
+                }
+                readers.push_back(std::move(r));
+            }
+
+            while (!pq.empty()) {
+                RawSeedEntry representative = pq.top()->current;
+                std::vector<Occurrence> current_occs;
+                std::unordered_set<uint32_t> unique_docs;
+
+                while (!pq.empty() && pq.top()->current.same_tokens(representative)) {
+                    ChunkReader* r = pq.top();
+                    pq.pop();
+
+                    current_occs.push_back({r->current.doc_id, r->current.pos});
+                    unique_docs.insert(r->current.doc_id);
+
+                    if (r->next()) pq.push(r);
+                }
+
+                if (unique_docs.size() >= (size_t)min_docs) {
+                    std::vector<uint32_t> tokens_vec(ngrams);
+                    for(int k = 0; k < ngrams; ++k) tokens_vec[k] = representative.tokens[k];
+                    candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
+                }
+            }
+
+            // Cleanup Disk Resources
+            for (auto& r : readers) {
+                if (r->stream.is_open()) r->stream.close();
+            }
+            readers.clear();
+
+            try {
+                if (fs::exists(temp_dir)) {
+                    fs::remove_all(temp_dir);
+                    std::cout << "[LOG] Step 1.5: Temporary directory and chunk files removed." << std::endl;
+                }
+            } catch (const fs::filesystem_error& e) {
+                std::cerr << "[WARNING] Cleanup failed: " << e.what() << std::endl;
+            }
         }
-    };
+        // --- END OF STEP 1.5 ---
 
-    auto cmp = [](ChunkReader* a, ChunkReader* b) { return a->current > b->current; };
-    std::priority_queue<ChunkReader*, std::vector<ChunkReader*>, decltype(cmp)> pq(cmp);
-
-    std::vector<std::unique_ptr<ChunkReader>> readers;
-    for (const auto& file : chunk_files) {
-        auto r = std::make_unique<ChunkReader>();
-        r->stream.open(file, std::ios::binary);
-        if (r->next()) { r->active = true; pq.push(r.get()); }
-        readers.push_back(std::move(r));
-    }
-
-    while (!pq.empty()) {
-        std::vector<Occurrence> current_occs;
-        RawSeedEntry representative = pq.top()->current;
-
-        // Собираем все идентичные N-граммы
-        while (!pq.empty() && pq.top()->current.same_tokens(representative)) {
-            ChunkReader* r = pq.top();
-            pq.pop();
-            current_occs.push_back({r->current.doc_id, r->current.pos});
-            if (r->next()) pq.push(r);
-        }
-
-        // Проверка частотности (unique docs)
-        std::unordered_set<uint32_t> unique_docs;
-        for (auto& o : current_occs) unique_docs.insert(o.doc_id);
-
-        if (unique_docs.size() >= (size_t)min_docs) {
-            std::vector<uint32_t> tokens_vec(ngrams);
-            for(int i=0; i<ngrams; ++i) tokens_vec[i] = representative.tokens[i];
-            candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
-        }
-    }
-
-    // Очистка временных файлов
-    readers.clear();
-    for (const auto& f : chunk_files) fs::remove(f);
-    fs::remove(temp_dir);
-
-    size_t total_seeds_generated = candidates.size(); // Теперь это только выжившие семена
+    size_t total_seeds_generated = candidates.size();
     stop_timer(std::to_string(ngrams) + "-gram Seed Generation (Disk)", s1_start);
 
-    // --- ШАГ 2: СОРТИРОВКА (как было) ---
-    std::cout << "[LOG] Step 2: Sorting " << candidates.size() << " candidates by support..." << std::endl;
+    std::cout << "[LOG] Step 2: Sorting " << candidates.size() << " candidates by score (support * length)..." << std::endl;
+
     std::sort(std::execution::par, candidates.begin(), candidates.end(), [](const Phrase& a, const Phrase& b) {
-        return a.support > b.support;
+        size_t score_a = a.support * a.tokens.size();
+        size_t score_b = b.support * b.tokens.size();
+
+        if (score_a != score_b) {
+            return score_a > score_b; // Сначала те, что покрывают больше текста
+        }
+        return a.support > b.support; // При равном весе — те, что чаще
     });
 
-    // --- ШАГ 3: РАСШИРЕНИЕ (как было) ---
     std::cout << "[LOG] Step 3: Expanding with Path Compression (Jumps)..." << std::endl;
     auto s3_start = start_timer();
     std::vector<Phrase> final_phrases;
 
-    std::vector<std::vector<uint8_t>> processed(docs.size());
-    for(size_t i=0; i<docs.size(); ++i) processed[i].assign(docs[i].size(), 0);
+    std::vector<std::vector<bool>> processed(doc_lengths.size());
+    for(size_t i = 0; i < doc_lengths.size(); ++i) {
+        processed[i].assign(doc_lengths[i], false);
+    }
 
     for (size_t c_idx = 0; c_idx < candidates.size(); ++c_idx) {
-        if (g_stop_requested) break;
+        if (g_stop_requested) {
+            std::cout << "\n[!] Expansion interrupted. Moving to save results..." << std::endl;
+            break;
+        }
 
-        if (c_idx % 1000 == 0 || c_idx == candidates.size() - 1) {
-            std::cout << "[LOG] Expansion Progress: " << (c_idx + 1) << "/" << candidates.size()
-                      << " candidates | Mined: " << final_phrases.size() << " | RAM: " << get_current_rss_mb() << " MB\r" << std::flush;
+        if (c_idx % 100 == 0 || c_idx == candidates.size() - 1) {
+            std::cout << "[LOG] Expanding: " << (c_idx + 1) << "/" << candidates.size()
+                      << " | Phrases found: " << final_phrases.size() << "          \r" << std::flush;
         }
 
         auto& cand = candidates[c_idx];
-        bool skip = true;
+
+        bool all_processed = true;
         for (auto& o : cand.occs) {
-            if (processed[o.doc_id][o.pos] == 0) { skip = false; break; }
+            if (!processed[o.doc_id][o.pos]) {
+                all_processed = false;
+                break;
+            }
         }
-        if (skip) continue;
+        if (all_processed) continue;
 
         while (true) {
             std::unordered_map<uint32_t, std::vector<Occurrence>> next_word_occs;
             for (auto& o : cand.occs) {
-                uint32_t np = o.pos + cand.tokens.size();
-                if (np < docs[o.doc_id].size()) {
-                    next_word_occs[docs[o.doc_id][np]].push_back(o);
+                // Использование кэшированного чтения документа с диска
+                const auto& doc = fetch_doc(o.doc_id);
+                uint32_t np = o.pos + (uint32_t)cand.tokens.size();
+                if (np < doc.size()) {
+                    next_word_occs[doc[np]].push_back(o);
                 }
             }
 
@@ -296,6 +439,7 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
             for (auto& [word, occs] : next_word_occs) {
                 std::unordered_set<uint32_t> unique_docs;
                 for (auto& o : occs) unique_docs.insert(o.doc_id);
+
                 if (unique_docs.size() >= (size_t)min_docs && unique_docs.size() >= max_support) {
                     max_support = unique_docs.size();
                     best_word = word;
@@ -313,7 +457,7 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
         for (auto& o : cand.occs) {
             for (uint32_t i = 0; i < (uint32_t)cand.tokens.size(); ++i) {
                 if (o.pos + i < processed[o.doc_id].size())
-                    processed[o.doc_id][o.pos + i] = 1;
+                    processed[o.doc_id][o.pos + i] = true;
             }
         }
         final_phrases.push_back(std::move(cand));
@@ -321,7 +465,6 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
     std::cout << std::endl;
     stop_timer("Expansion & Pruning", s3_start);
 
-    // СТАТИСТИКА И СОХРАНЕНИЕ
     size_t count_6plus = 0;
     for (const auto& p : final_phrases) if (p.tokens.size() >= 6) count_6plus++;
 
@@ -341,20 +484,29 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
 
 void CorpusMiner::save_to_csv(const std::vector<Phrase>& res, const std::string& out_p) {
     std::ofstream f(out_p);
+    if (!f.is_open()) return;
+
     f << "phrase,freq,length,example_files\n";
     for (const auto& p : res) {
         f << "\"";
         for (size_t i = 0; i < p.tokens.size(); ++i) {
-            f << id_to_word[p.tokens[i]] << (i == p.tokens.size()-1 ? "" : " ");
+            // Safety check for dictionary lookup
+            if (p.tokens[i] < id_to_word.size()) {
+                f << id_to_word[p.tokens[i]] << (i == p.tokens.size()-1 ? "" : " ");
+            }
         }
         f << "\"," << p.support << "," << p.tokens.size() << ",\"";
 
         std::unordered_set<uint32_t> d_ids;
         for (auto& o : p.occs) d_ids.insert(o.doc_id);
+
         size_t count = 0;
         for (auto id : d_ids) {
-            f << file_paths[id] << (count++ < 1 ? "|" : "");
-            if (count > 1) break;
+            if (id < file_paths.size()) {
+                f << file_paths[id];
+                if (++count >= 2) break; // Limit to 2 examples
+                if (count < d_ids.size()) f << "|";
+            }
         }
         f << "\"\n";
     }

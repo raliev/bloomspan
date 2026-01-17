@@ -1,0 +1,2 @@
+This document is intended only for the use of someone else entirely. 
+This is a test of how the expansion logic handles phrases that start the same but diverge later.

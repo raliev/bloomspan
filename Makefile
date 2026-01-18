@@ -11,16 +11,16 @@ ifeq ($(UNAME_S), Darwin)
     endif
     
     # Added -fno-stack-check as it sometimes interferes with Mach-O relocations
-    CXXFLAGS = -std=c++20 -O3 -march=native -pthread -Wall -Wextra -fopenmp \
-               -fno-stack-check -I$(BREW_PREFIX)/include
+    CXXFLAGS = -std=c++20 -g -O1 -march=native -pthread -Wall -Wextra -fopenmp \
+               -fno-stack-check -I$(BREW_PREFIX)/include -fsanitize=address
 
     # -Wl,-ld_classic: Uses the older, more stable linker that handles GCC better
     # -Wl,-no_compact_unwind: Fixes issues with OpenMP/Exception handling relocations
     LDFLAGS = -L$(BREW_PREFIX)/lib -ltbb -fopenmp -Wl,-ld_classic -Wl,-no_compact_unwind
 else
-    # Linux/Standard settings
+    # Linux/Standard settings - added -g for debug symbols
     CXX = g++
-    CXXFLAGS = -std=c++20 -O3 -march=native -pthread -flto -Wall -Wextra -fopenmp
+    CXXFLAGS = -std=c++20 -g -O1 -march=native -pthread -Wall -Wextra -fopenmp
     LDFLAGS = -ltbb -fopenmp
 endif
 
@@ -42,4 +42,4 @@ $(TARGET): $(OBJS)
 clean:
 	rm -f $(OBJS) $(TARGET)
 
-.PHONY: all clean debug
+.PHONY: all clean

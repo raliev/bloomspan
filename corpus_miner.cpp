@@ -21,16 +21,141 @@
 
 namespace fs = std::filesystem;
 
+const int SMALL_NGRAMS_THRESHOLD = 16;  // Use fixed array for n <= this value
+const int MAX_NGRAMS_FIXED = 16;       // Maximum size for fixed array
+
 struct RawSeedEntry {
-    uint32_t tokens[10]; // Поддержка до 10-грамм (хватит для большинства задач)
     uint32_t doc_id;
     uint32_t pos;
-    int n; // текущий размер ngrams
+    int n;
+    
+    // Hybrid storage: fixed array for small n-grams, vector for large ones
+    union {
+        uint32_t fixed_tokens[MAX_NGRAMS_FIXED];
+        std::vector<uint32_t>* dynamic_tokens;
+    } tokens;
+    
+    // Flag to indicate which storage is being used
+    bool is_dynamic;
+
+    RawSeedEntry() : doc_id(0), pos(0), n(0), is_dynamic(false) {
+        std::memset(tokens.fixed_tokens, 0, sizeof(tokens.fixed_tokens));
+    }
+
+    ~RawSeedEntry() {
+        if (is_dynamic && tokens.dynamic_tokens != nullptr) {
+            delete tokens.dynamic_tokens;
+            tokens.dynamic_tokens = nullptr;
+        }
+    }
+
+    // Copy constructor
+    RawSeedEntry(const RawSeedEntry& other) : doc_id(other.doc_id), pos(other.pos), n(other.n), is_dynamic(other.is_dynamic) {
+        if (is_dynamic) {
+            tokens.dynamic_tokens = new std::vector<uint32_t>(*other.tokens.dynamic_tokens);
+        } else {
+            std::memcpy(tokens.fixed_tokens, other.tokens.fixed_tokens, sizeof(tokens.fixed_tokens));
+        }
+    }
+
+    // Move constructor
+    RawSeedEntry(RawSeedEntry&& other) noexcept : doc_id(other.doc_id), pos(other.pos), n(other.n), is_dynamic(other.is_dynamic) {
+        if (is_dynamic) {
+            tokens.dynamic_tokens = other.tokens.dynamic_tokens;
+            other.tokens.dynamic_tokens = nullptr;
+        } else {
+            std::memcpy(tokens.fixed_tokens, other.tokens.fixed_tokens, sizeof(tokens.fixed_tokens));
+        }
+    }
+
+    // Copy assignment
+    RawSeedEntry& operator=(const RawSeedEntry& other) {
+        if (this == &other) return *this;
+        
+        // Clean up old data
+        if (is_dynamic && tokens.dynamic_tokens != nullptr) {
+            delete tokens.dynamic_tokens;
+            tokens.dynamic_tokens = nullptr;
+        }
+        
+        doc_id = other.doc_id;
+        pos = other.pos;
+        n = other.n;
+        is_dynamic = other.is_dynamic;
+        
+        if (is_dynamic) {
+            tokens.dynamic_tokens = new std::vector<uint32_t>(*other.tokens.dynamic_tokens);
+        } else {
+            std::memcpy(tokens.fixed_tokens, other.tokens.fixed_tokens, sizeof(tokens.fixed_tokens));
+        }
+        return *this;
+    }
+
+    // Move assignment
+    RawSeedEntry& operator=(RawSeedEntry&& other) noexcept {
+        if (this == &other) return *this;
+        
+        // Clean up old data
+        if (is_dynamic && tokens.dynamic_tokens != nullptr) {
+            delete tokens.dynamic_tokens;
+            tokens.dynamic_tokens = nullptr;
+        }
+        
+        doc_id = other.doc_id;
+        pos = other.pos;
+        n = other.n;
+        is_dynamic = other.is_dynamic;
+        
+        if (is_dynamic) {
+            tokens.dynamic_tokens = other.tokens.dynamic_tokens;
+            other.tokens.dynamic_tokens = nullptr;
+        } else {
+            std::memcpy(tokens.fixed_tokens, other.tokens.fixed_tokens, sizeof(tokens.fixed_tokens));
+        }
+        return *this;
+    }
+
+    // Helper to get token at index
+    uint32_t get_token(int idx) const {
+        if (is_dynamic) {
+            return (*tokens.dynamic_tokens)[idx];
+        } else {
+            return tokens.fixed_tokens[idx];
+        }
+    }
+
+    // Helper to set token at index
+    void set_token(int idx, uint32_t value) {
+        if (is_dynamic) {
+            (*tokens.dynamic_tokens)[idx] = value;
+        } else {
+            tokens.fixed_tokens[idx] = value;
+        }
+    }
+
+    // Initialize with n-grams
+    void init_tokens(int num_tokens) {
+        if (is_dynamic && tokens.dynamic_tokens != nullptr) {
+            delete tokens.dynamic_tokens;
+            tokens.dynamic_tokens = nullptr;
+        }
+        
+        n = num_tokens;
+        if (num_tokens > SMALL_NGRAMS_THRESHOLD) {
+            is_dynamic = true;
+            tokens.dynamic_tokens = new std::vector<uint32_t>(num_tokens, 0);
+        } else {
+            is_dynamic = false;
+            std::memset(tokens.fixed_tokens, 0, sizeof(tokens.fixed_tokens));
+        }
+    }
 
     // Оператор для priority_queue (нужен обратный порядок для min-heap)
     bool operator>(const RawSeedEntry& other) const {
         for (int i = 0; i < n; ++i) {
-            if (tokens[i] != other.tokens[i]) return tokens[i] > other.tokens[i];
+            uint32_t this_token = (is_dynamic) ? (*tokens.dynamic_tokens)[i] : tokens.fixed_tokens[i];
+            uint32_t other_token = (other.is_dynamic) ? (*other.tokens.dynamic_tokens)[i] : other.tokens.fixed_tokens[i];
+            if (this_token != other_token) return this_token > other_token;
         }
         if (doc_id != other.doc_id) return doc_id > other.doc_id;
         return pos > other.pos;
@@ -38,9 +163,53 @@ struct RawSeedEntry {
 
     bool same_tokens(const RawSeedEntry& other) const {
         for (int i = 0; i < n; ++i) {
-            if (tokens[i] != other.tokens[i]) return false;
+            uint32_t this_token = (is_dynamic) ? (*tokens.dynamic_tokens)[i] : tokens.fixed_tokens[i];
+            uint32_t other_token = (other.is_dynamic) ? (*other.tokens.dynamic_tokens)[i] : other.tokens.fixed_tokens[i];
+            if (this_token != other_token) return false;
         }
         return true;
+    }
+
+    // Serialization: writes to binary stream
+    void write_to_stream(std::ofstream& out) const {
+        out.write((char*)&doc_id, sizeof(doc_id));
+        out.write((char*)&pos, sizeof(pos));
+        out.write((char*)&n, sizeof(n));
+        out.write((char*)&is_dynamic, sizeof(is_dynamic));
+        
+        if (is_dynamic) {
+            for (int i = 0; i < n; ++i) {
+                uint32_t token = (*tokens.dynamic_tokens)[i];
+                out.write((char*)&token, sizeof(token));
+            }
+        } else {
+            out.write((char*)tokens.fixed_tokens, n * sizeof(uint32_t));
+        }
+    }
+
+    // Deserialization: reads from binary stream
+    void read_from_stream(std::ifstream& in) {
+        in.read((char*)&doc_id, sizeof(doc_id));
+        in.read((char*)&pos, sizeof(pos));
+        in.read((char*)&n, sizeof(n));
+        in.read((char*)&is_dynamic, sizeof(is_dynamic));
+        
+        if (is_dynamic && tokens.dynamic_tokens != nullptr) {
+            delete tokens.dynamic_tokens;
+            tokens.dynamic_tokens = nullptr;
+        }
+        
+        if (is_dynamic) {
+            tokens.dynamic_tokens = new std::vector<uint32_t>(n);
+            for (int i = 0; i < n; ++i) {
+                uint32_t token;
+                in.read((char*)&token, sizeof(token));
+                (*tokens.dynamic_tokens)[i] = token;
+            }
+        } else {
+            std::memset(tokens.fixed_tokens, 0, sizeof(tokens.fixed_tokens));
+            in.read((char*)tokens.fixed_tokens, n * sizeof(uint32_t));
+        }
     }
 };
 
@@ -262,6 +431,8 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
 
             if (doc_ptr->size() < (size_t)ngrams) continue;
 
+            // here we count the ngrams before the counter reaches 255
+            // the goal is to filter out the ngrams with low frequency (<num_docs) from further processing
             for (uint32_t p = 0; p <= doc_ptr->size() - ngrams; ++p) {
                 uint64_t h = hash_tokens(doc_ptr->data() + p, ngrams);
                 size_t idx = h % filter_size;
@@ -275,6 +446,10 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
             }
         }
     }
+
+    // we collected the ngram stats in filter counters
+    // we have not saved the ngrams themselves anywhere (because for the large datasets this number can skyrocket)
+
     // Pass 2: Collection with Statistics
     auto mine_start = start_timer();
     std::cout << "[LOG] Step 1: Gathering " << ngrams << "-gram seeds..." << std::endl;
@@ -295,19 +470,29 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
         if (in_memory_only) return;
         std::cout << "\n[LOG] Flushing " << buffer.size() << " seeds to disk... (RAM: " << get_current_rss_mb() << " MB)" << std::endl;
         std::sort(std::execution::par, buffer.begin(), buffer.end(), [](const RawSeedEntry& a, const RawSeedEntry& b) {
-            for (int i = 0; i < a.n; ++i) if (a.tokens[i] != b.tokens[i]) return a.tokens[i] < b.tokens[i];
+            for (int i = 0; i < a.n; ++i) {
+                uint32_t a_token = (a.is_dynamic) ? (*a.tokens.dynamic_tokens)[i] : a.tokens.fixed_tokens[i];
+                uint32_t b_token = (b.is_dynamic) ? (*b.tokens.dynamic_tokens)[i] : b.tokens.fixed_tokens[i];
+                if (a_token != b_token) return a_token < b_token;
+            }
             return a.doc_id < b.doc_id;
         });
         std::string fname = temp_dir + "/chunk_" + std::to_string(chunk_id++) + ".bin";
         chunk_files.push_back(fname);
         std::ofstream out(fname, std::ios::binary);
-        if (out) out.write((char*)buffer.data(), buffer.size() * sizeof(RawSeedEntry));
+        if (out) {
+            for (const auto& entry : buffer) {
+                entry.write_to_stream(out);
+            }
+        }
         buffer.clear();
         buffer.shrink_to_fit();
     };
 
     for (uint32_t d = 0; d < doc_lengths.size(); ++d) {
+        // since this is memory intensive processing, we offload data to the files (chunks)
         if (memory_limit_mb > 0 && get_current_rss_mb() >= (size_t)(memory_limit_mb * 0.75)) flush_buffer();
+        // fetch_doc fetches from the disk and caches in memory; with the --in-mem flag it does not use the disk
         const auto& current_doc = fetch_doc(d);
         if (current_doc.size() < (size_t)ngrams) continue;
 
@@ -315,19 +500,24 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
             total_processed++;
             uint64_t h = hash_tokens(&current_doc[p], ngrams);
 
-            // Bloom Filter check
+            // Bloom Filter check. The BF is probabilistic, it uses a hash as an input which may have collisions
+            // we don't process ngrams until they reach min_docs or 255
             if (filter_counters[h % filter_size] >= (uint8_t)std::min(min_docs, 255)) {
                 // DF check
+                // it is required because Bloom Filter is probabilistic and may produce false positives
                 bool df_ok = true;
                 for (int i = 0; i < ngrams; ++i) {
                     if (word_df[current_doc[p+i]] < (uint32_t)min_docs) { df_ok = false; break; }
                 }
 
                 if (df_ok) {
+                    //saving the candidate in the buffer (std::vector<RawSeedEntry>)
                     RawSeedEntry entry;
-                    std::memset(&entry, 0, sizeof(RawSeedEntry));
-                    entry.n = ngrams; entry.doc_id = d; entry.pos = p;
-                    for (int i = 0; i < ngrams; ++i) entry.tokens[i] = current_doc[p + i];
+                    entry.init_tokens(ngrams);
+                    entry.n = ngrams; 
+                    entry.doc_id = d; 
+                    entry.pos = p;
+                    for (int i = 0; i < ngrams; ++i) entry.set_token(i, current_doc[p + i]);
                     buffer.push_back(entry);
                     seeds_passed++;
                 } else {
@@ -354,7 +544,9 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
         std::cout << "[LOG] In-Memory Mode: Sorting all " << buffer.size() << " seeds in RAM..." << std::endl;
         std::sort(std::execution::par, buffer.begin(), buffer.end(), [](const RawSeedEntry& a, const RawSeedEntry& b) {
             for (int i = 0; i < a.n; ++i) {
-                if (a.tokens[i] != b.tokens[i]) return a.tokens[i] < b.tokens[i];
+                uint32_t a_token = (a.is_dynamic) ? (*a.tokens.dynamic_tokens)[i] : a.tokens.fixed_tokens[i];
+                uint32_t b_token = (b.is_dynamic) ? (*b.tokens.dynamic_tokens)[i] : b.tokens.fixed_tokens[i];
+                if (a_token != b_token) return a_token < b_token;
             }
             if (a.doc_id != b.doc_id) return a.doc_id < b.doc_id;
             return a.pos < b.pos;
@@ -386,7 +578,9 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
                 // Support check (min_docs)
                 if (unique_docs.size() >= (size_t)min_docs) {
                     std::vector<uint32_t> tokens_vec(ngrams);
-                    for(int k = 0; k < ngrams; ++k) tokens_vec[k] = representative.tokens[k];
+                    for(int k = 0; k < ngrams; ++k) {
+                        tokens_vec[k] = (representative.is_dynamic) ? (*representative.tokens.dynamic_tokens)[k] : representative.tokens.fixed_tokens[k];
+                    }
                     candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
                 }
             }
@@ -400,11 +594,17 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
                 RawSeedEntry current;
                 bool active;
                 bool next() {
-                    if (!stream.read((char*)&current, sizeof(RawSeedEntry))) {
+                    try {
+                        current.read_from_stream(stream);
+                        if (!stream) {
+                            active = false;
+                            return false;
+                        }
+                        return true;
+                    } catch (...) {
                         active = false;
                         return false;
                     }
-                    return true;
                 }
             };
 
@@ -439,7 +639,9 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
 
                 if (unique_docs.size() >= (size_t)min_docs) {
                     std::vector<uint32_t> tokens_vec(ngrams);
-                    for(int k = 0; k < ngrams; ++k) tokens_vec[k] = representative.tokens[k];
+                    for(int k = 0; k < ngrams; ++k) {
+                        tokens_vec[k] = (representative.is_dynamic) ? (*representative.tokens.dynamic_tokens)[k] : representative.tokens.fixed_tokens[k];
+                    }
                     candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
                 }
             }

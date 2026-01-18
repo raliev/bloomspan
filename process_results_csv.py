@@ -15,10 +15,9 @@ def main():
 
     print(f"Reading {args.input}...")
     try:
-        df = pd.read_csv(args.input)
+        df = pd.read_csv(args.input, encoding='utf-8')
     except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        df = pd.read_csv(args.input, encoding='utf-16')
 
     # Sanitize data
     df = df.dropna(subset=['phrase'])
@@ -40,7 +39,7 @@ def main():
     tree_df = build_phrase_tree(df)
 
     print(f"Saving enriched CSV to {args.output}...")
-    tree_df.to_csv(args.output, index=False)
+    tree_df.to_csv(args.output, index=False, encoding='utf-8')
 
     generate_html_tree(tree_df, "visualization.html", max_nodes=args.limit)
     print("\nProcess finished successfully.")

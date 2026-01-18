@@ -177,4 +177,4 @@ def generate_html_tree(df, output_file="tree_view.html", max_nodes=15000):
     </html>
     """
     with open(output_file, "w", encoding="utf-8") as f:
-        f.write(html_template.replace("%DATA%", json.dumps(final_tree)))
+        f.write(html_template.replace("%DATA%", json.dumps(final_tree, ensure_ascii=False)))

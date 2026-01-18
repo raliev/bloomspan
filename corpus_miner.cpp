@@ -113,7 +113,32 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
     #pragma omp parallel for
     for (size_t i = 0; i < n; ++i) {
         std::ifstream file(paths[i], std::ios::binary);
-        if (file) {
+        if (!file) continue;
+
+        unsigned char bom[2] = {0, 0};
+        file.read((char*)bom, 2);
+
+        if (bom[0] == 0xFF && bom[1] == 0xFE) {
+            // UTF-16 Little Endian
+            std::vector<char> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            std::u16string u16_content;
+            u16_content.resize(buffer.size() / 2);
+            std::memcpy(u16_content.data(), buffer.data(), u16_content.size() * 2);
+            raw_docs[i] = tokenize_utf16(u16_content);
+        }
+        else if (bom[0] == 0xFE && bom[1] == 0xFF) {
+            // UTF-16 Big Endian (Manual byte swap)
+            std::vector<char> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            std::u16string u16_content;
+            u16_content.reserve(buffer.size() / 2);
+            for (size_t j = 0; j + 1 < buffer.size(); j += 2) {
+                u16_content.push_back((char16_t)(((unsigned char)buffer[j] << 8) | (unsigned char)buffer[j+1]));
+            }
+            raw_docs[i] = tokenize_utf16(u16_content);
+        }
+        else {
+            // Standard UTF-8 / ASCII logic
+            file.seekg(0, std::ios::beg);
             std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             raw_docs[i] = tokenize(content);
         }

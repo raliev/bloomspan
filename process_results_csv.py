@@ -13,11 +13,25 @@ def main():
     parser.add_argument("--min_f", type=int, default=0, help="Minimum frequency (doc count)")
     args = parser.parse_args()
 
-    print(f"Reading {args.input}...")
-    try:
-        df = pd.read_csv(args.input, encoding='utf-8')
-    except Exception as e:
-        df = pd.read_csv(args.input, encoding='utf-16')
+    encodings_to_try = ['utf-8-sig', 'utf-16', 'utf-16le', 'utf-16be', 'latin-1']
+    df = None
+
+    for enc in encodings_to_try:
+        try:
+            # We use engine='python' occasionally for better error handling with encodings,
+            # but the default C engine is usually fine if the encoding is correct.
+            df = pd.read_csv(args.input, encoding=enc)
+            print(f"Successfully loaded using {enc} encoding.")
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except Exception as e:
+            print(f"Skipping {enc} due to error: {e}")
+            continue
+
+    if df is None:
+        print(f"Error: Could not decode {args.input} with any supported encoding.")
+        sys.exit(1)
 
     # Sanitize data
     df = df.dropna(subset=['phrase'])

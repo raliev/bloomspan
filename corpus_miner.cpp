@@ -239,6 +239,135 @@ const std::vector<uint32_t>& CorpusMiner::fetch_doc(uint32_t doc_id) const {
     return doc_cache[doc_id] = std::move(doc);
 }
 
+// boilerplate-buster/corpus_miner.cpp
+
+void CorpusMiner::load_csv(const std::string& path, char delimiter, double sampling) {
+    auto total_start = start_timer();
+    std::cout << "[LOG] Loading CSV: " << path << " (Delimiter: '" << delimiter << "')" << std::endl;
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        std::cerr << "[ERROR] Could not open CSV file: " << path << std::endl;
+        return;
+    }
+
+    std::vector<std::string> rows;
+    std::string currentRow;
+    std::string currentField;
+    bool inQuotes = false;
+    char c;
+
+    // Phase 0: Robust CSV Parsing
+    while (file.get(c)) {
+        if (inQuotes) {
+            if (c == '"') {
+                if (file.peek() == '"') {
+                    currentField += '"';
+                    file.get();
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                currentField += c;
+            }
+        } else {
+            if (c == '"') {
+                inQuotes = true;
+            } else if (c == delimiter) {
+                if (!currentRow.empty()) currentRow += " ";
+                currentRow += currentField;
+                currentField.clear();
+            } else if (c == '\n' || c == '\r') {
+                if (!currentRow.empty() || !currentField.empty()) {
+                    if (!currentRow.empty()) currentRow += " ";
+                    currentRow += currentField;
+                    rows.push_back(std::move(currentRow));
+                    currentRow.clear();
+                    currentField.clear();
+                }
+                if (c == '\r' && file.peek() == '\n') file.get();
+            } else {
+                currentField += c;
+            }
+        }
+    }
+    if (!currentRow.empty() || !currentField.empty()) {
+        if (!currentRow.empty()) currentRow += " ";
+        currentRow += currentField;
+        rows.push_back(std::move(currentRow));
+    }
+
+    if (sampling < 1.0) {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(rows.begin(), rows.end(), g);
+        rows.resize(static_cast<size_t>(rows.size() * sampling));
+    }
+
+    size_t n = rows.size();
+    std::vector<std::vector<std::string>> raw_docs(n);
+    if (max_threads > 0) omp_set_num_threads(max_threads);
+
+    #pragma omp parallel for
+    for (size_t i = 0; i < n; ++i) {
+        raw_docs[i] = tokenize(rows[i]);
+        rows[i].clear();
+    }
+    rows.clear();
+
+    // Phase II: Encoding and Binary Persistence
+    docs.clear();
+    if (in_memory_only) docs.reserve(n);
+    file_paths.reserve(n);
+    std::vector<uint32_t> word_last_doc_id;
+    word_df.clear();
+
+    // Open binary file if not in-memory mode
+    std::unique_ptr<std::ofstream> bin_out;
+    if (!in_memory_only) {
+        bin_out = std::make_unique<std::ofstream>(bin_corpus_path, std::ios::binary);
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        file_paths.push_back("row_" + std::to_string(i));
+        std::vector<uint32_t> encoded;
+        encoded.reserve(raw_docs[i].size());
+
+        for (const auto& w : raw_docs[i]) {
+            uint32_t w_id;
+            auto it = word_to_id.find(w);
+            if (it == word_to_id.end()) {
+                w_id = id_to_word.size();
+                word_to_id[w] = w_id;
+                id_to_word.push_back(w);
+                word_df.push_back(0);
+                word_last_doc_id.push_back(0);
+            } else {
+                w_id = it->second;
+            }
+            encoded.push_back(w_id);
+
+            if (word_last_doc_id[w_id] != (uint32_t)i + 1) {
+                word_df[w_id]++;
+                word_last_doc_id[w_id] = (uint32_t)i + 1;
+            }
+        }
+
+        doc_lengths.push_back(encoded.size());
+
+        if (in_memory_only) {
+            docs.push_back(std::move(encoded));
+        } else {
+            // FIX: Populate doc_offsets and write to disk
+            doc_offsets.push_back(bin_out->tellp());
+            bin_out->write((char*)encoded.data(), encoded.size() * sizeof(uint32_t));
+            encoded.clear();
+        }
+        raw_docs[i].clear();
+    }
+    stop_timer("CSV Loading & Encoding", total_start);
+}
+
 void CorpusMiner::load_directory(const std::string& path, double sampling) {
     auto total_start = start_timer();
 

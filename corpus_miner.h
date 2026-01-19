@@ -51,6 +51,7 @@ public:
         }
 
     void load_directory(const std::string& path, double sampling = 1.0);
+    void load_csv(const std::string& path, char delimiter = ',', double sampling = 1.0);
     void mine(int min_docs, int ngrams, const std::string& output_csv);
     void save_to_csv(const std::vector<Phrase>& res, const std::string& out_p);
 };

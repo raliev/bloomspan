@@ -67,7 +67,7 @@ def create_test_files(target_folder, num_files, words_per_file, csv_path):
 
 # --- Configuration ---
 TARGET_DIRECTORY = "./tests/generated"
-NUMBER_OF_FILES = 10000
+NUMBER_OF_FILES = 100000
 WORDS_PER_FILE = 500
 CSV_FILE_PATH = "generate_test_dataset.csv" # Format: "The quick brown fox", 3
 

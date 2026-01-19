@@ -23,6 +23,7 @@ namespace fs = std::filesystem;
 
 const int SMALL_NGRAMS_THRESHOLD = 16;  // Use fixed array for n <= this value
 const int MAX_NGRAMS_FIXED = 16;       // Maximum size for fixed array
+const int DEBUG = 0; // to see internal structures in the console
 
 struct RawSeedEntry {
     uint32_t doc_id;
@@ -628,6 +629,18 @@ void CorpusMiner::mine(int min_docs, int ngrams, const std::string& output_csv) 
         for (uint32_t p = 0; p <= current_doc.size() - ngrams; ++p) {
             total_processed++;
             uint64_t h = hash_tokens(&current_doc[p], ngrams);
+
+            if (DEBUG) {                                
+                std::cout << "[DEBUG] Doc " << d << " Pos " << p << " Hash: " << h << std::endl;
+                std::cout << "[DEBUG] Tokens: ";
+                for (int k = 0; k < ngrams; ++k) {
+                    std::cout << id_to_word[current_doc[p + k]] << " ";     
+                }
+                std::cout << std::endl;
+                std::cout << "[DEBUG] Filter Counter: " << (int)filter_counters[h % filter_size] << std::endl;
+                std::cout << std::endl;
+                std::cout << std::flush;
+            }
 
             // Bloom Filter check. The BF is probabilistic, it uses a hash as an input which may have collisions
             // we don't process ngrams until they reach min_docs or 255

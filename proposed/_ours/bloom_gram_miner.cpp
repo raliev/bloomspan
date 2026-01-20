@@ -1,6 +1,6 @@
 #include "bloom_gram_miner.h"
-#include "timer.h"
-#include "signal_handler.h"
+#include "../timer.h"
+#include "../signal_handler.h"
 #include <filesystem>
 #include <iostream>
 #include <fstream>

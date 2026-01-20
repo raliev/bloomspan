@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 #include "mining_algorithm.h"
-#include "bloom_gram_miner.h"
+#include "_ours/bloom_gram_miner.h"
 #include "bide/bide_miner.h"
 
 enum class AlgorithmKind {

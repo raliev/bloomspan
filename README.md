@@ -35,6 +35,40 @@ The framework includes a wrapper for the **SPMF (Sequential Pattern Mining Frame
 * **Setup**: Download `spmf.jar` from the [official site](http://www.philippe-fournier-viger.com/spmf/) and place it in the same directory as the `corpus_miner` binary.
 * **Usage**: Use the flag `--spmf` and `--spmf-params "<params>"` and `--spmf-location /path/to/spmf.jar`.
 
+Вот перевод описания новизны вашего алгоритма на английский язык, а также готовая секция для вашего README.md.
+
+Novelty of the BloomNgramMiner Algorithm
+The novelty of the BloomNgramMiner lies in its unique combination of probabilistic data structures, out-of-core processing, and a greedy expansion strategy designed specifically for large-scale text corpora.
+
+📝 README Section (Markdown)
+Markdown
+
+## Algorithm Novelty: BloomSpan vs BIDE+
+
+The `BloomSpan` is a high-performance sequential phrase discovery algorithm designed to handle datasets that exceed available RAM. It introduces several key innovations:
+
+### 1. Probabilistic Frequency Estimation (Bloom Pass)
+Unlike traditional miners that store all n-gram candidates, this algorithm performs a **pre-emptive frequency estimation**:
+* **Bloom Filter with Counters**: It uses a thread-safe Bloom Filter to estimate n-gram frequencies in a single pass.
+* **Noise Reduction**: N-grams with a frequency lower than the `min_docs` threshold are discarded immediately, preventing memory explosion from rare sequences.
+
+### 2. Greedy Expansion with Path Compression
+The core mining logic employs a "Seed-and-Expand" strategy with significant optimizations:
+* **Jumps**: Starting from an n-gram seed, the algorithm greedily expands to the right by selecting the most frequent subsequent tokens.
+* **Global Pruning**: A bit-matrix (or vector of booleans) tracks already processed positions in the corpus. Once a long phrase is found, its constituent tokens are marked, preventing the redundant discovery of sub-phrases.
+
+### 3. Hybrid Memory-Efficient Storage (optional)
+The algorithm utilizes a custom `RawSeedEntry` structure to optimize memory footprint:
+* **Fixed vs. Dynamic**: It uses a fixed-size array for short n-grams (up to 16 tokens) to avoid frequent heap allocations.
+* **Switching Logic**: It transparently switches to dynamic vector storage only when the sequence length exceeds the threshold.
+
+The miner is built for "Big Data" scenarios through a robust disk-based architecture:
+* **External Merge Sort**: When RAM usage reaches a defined limit, the algorithm flushes sorted "chunks" of candidates to disk.
+* **Priority Queue Merging**: It reconstructs the final candidate list using a disk-aware merge sort, allowing it to process corpora of virtually any size.
+
+### 4. Multi-threaded Score Prioritization
+Before expansion, candidates are prioritized based on a scoring function: $Score = Support \times Length$. This ensures that the most "descriptive" and heavy-weight phrases are processed first, maximizing the efficiency of the pruning bit-matrix.
+
 ## Configuration and CLI Flags
 
 ### C++ Core Engine Parameters

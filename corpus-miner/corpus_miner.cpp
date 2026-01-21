@@ -19,6 +19,9 @@
 #include <cstring>
 #include <vector>
 #include <cstdio>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -508,11 +511,19 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
 }
 
 size_t CorpusMiner::get_current_rss_mb() {
+#ifdef __APPLE__
+    struct mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
+        return info.resident_size / (1024 * 1024);
+    }
+    return 0;
+#else
     std::ifstream stat_stream("/proc/self/statm", std::ios_base::in);
     unsigned long long pages;
-    stat_stream >> pages;
-    stat_stream >> pages;
+    if (!(stat_stream >> pages >> pages)) return 0;
     return (pages * sysconf(_SC_PAGESIZE)) / (1024 * 1024);
+#endif
 }
 
 void CorpusMiner::save_to_csv(const std::vector<Phrase>& res, const std::string& out_p) {

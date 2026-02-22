@@ -1,0 +1,10 @@
+test_id,sigma,phrase,doc_frequency
+01_max_check,3,apple banana cherry,3
+01_max_check,3,apple banana,3
+02_branching,3,alpha beta gamma,3
+02_branching,3,alpha beta delta,3
+03_doc_vs_term,3,repeat_twice repeat_twice,1
+04_sandwich,3,gold silver bronze,3
+04_sandwich,3,silver bronze iron,3
+05_sigma_edge,3,target found,3
+05_sigma_edge,3,almost there,2

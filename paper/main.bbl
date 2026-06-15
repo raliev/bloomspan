@@ -1,0 +1,133 @@
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{\texttt{#1}}
+\providecommand{\urlprefix}{URL }
+\providecommand{\doi}[1]{https://doi.org/#1}
+
+\bibitem{abouelhoda2004replacing}
+Abouelhoda, M.I., Kurtz, S., Ohlebusch, E.: Replacing suffix trees with
+  enhanced suffix arrays. Journal of Discrete Algorithms  \textbf{2}(1),
+  53--86 (2004)
+
+\bibitem{agrawal1995mining}
+Agrawal, R., Srikant, R.: Mining sequential patterns. In: Proceedings of the
+  Eleventh International Conference on Data Engineering. pp. 3--14. IEEE (1995)
+
+\bibitem{cormode2005improved}
+Cormode, G., Muthukrishnan, S.: An improved data stream summary: the count-min
+  sketch and its applications. Journal of Algorithms  \textbf{55}(1),  58--75
+  (2005)
+
+\bibitem{dhaliwal2012practical}
+Dhaliwal, J., Puglisi, S.J., Turpin, A.: Practical efficient string mining.
+  IEEE Transactions on Knowledge and Data Engineering  \textbf{24}(4),
+  735--744 (2012). \doi{10.1109/TKDE.2010.242}
+
+\bibitem{fan2000summary}
+Fan, L., Cao, P., Almeida, J., Broder, A.Z.: Summary cache: a scalable
+  wide-area web cache sharing protocol. IEEE/ACM Transactions on Networking
+  \textbf{8}(3),  281--293 (2000)
+
+\bibitem{gutenberg8k}
+{Fhrozen}: gutenberg8k: A snapshot of 8544 english-language books from project
+  gutenberg. Hugging Face Datasets (2023),
+  \url{https://huggingface.co/datasets/Fhrozen/gutenberg8k}, accessed 2026
+
+\bibitem{fischer2006fast}
+Fischer, J., Heun, V.: Fast frequent string mining using suffix arrays. In:
+  Annual Symposium on Combinatorial Pattern Matching. pp. 155--166. Springer
+  (2006)
+
+\bibitem{fischer2005icdm}
+Fischer, J., Heun, V., Kramer, S.: Fast frequent string mining using suffix
+  arrays. In: Proc.\ 5th IEEE International Conference on Data Mining (ICDM).
+  pp. 609--612 (2005). \doi{10.1109/ICDM.2005.62}
+
+\bibitem{fischer2009dami}
+Fischer, J., Heun, V., Kramer, S.: Fast frequent string mining using suffix
+  arrays. Data Mining and Knowledge Discovery  \textbf{18}(3),  439--479
+  (2009). \doi{10.1007/s10618-008-0122-1}
+
+\bibitem{fischer2008space}
+Fischer, J., M{\"a}kinen, V., V{\"a}lim{\"a}ki, N.: Space-efficient string
+  mining under frequency constraints. In: Proc.\ 8th IEEE International
+  Conference on Data Mining (ICDM). pp. 193--202 (2008).
+  \doi{10.1109/ICDM.2008.32}
+
+\bibitem{fournierviger2016spmf}
+Fournier-Viger, P., Lin, J.C.W., Kiran, R.U., Koh, Y.S., Thomas, R.: The {SPMF}
+  open-source data mining library version 2. In: Joint European Conference on
+  Machine Learning and Knowledge Discovery in Databases. pp. 36--40. Springer
+  (2016)
+
+\bibitem{fournier2014vmsp}
+Fournier-Viger, P., Wu, C.W., Gomariz, A., Tseng, V.S.: Vmsp: Efficient
+  vertical mining of maximal sequential patterns. In: Canadian Conference on
+  Artificial Intelligence. pp. 83--94. Springer (2014)
+
+\bibitem{guo2024netfreq}
+Guo, P., Umboh, S.W., Wirth, A., Zobel, J.: Online computation of string net
+  frequency. In: String Processing and Information Retrieval --- 31st
+  International Symposium, SPIRE 2024. Lecture Notes in Computer Science, vol.
+  14899, pp. 159--173. Springer (2024). \doi{10.1007/978-3-031-72200-4_12}
+
+\bibitem{gutenbergcleaned}
+{incredible45}: Gutenberg-bookcorpus-cleaned-data-english: a cleaned snapshot
+  of the project gutenberg english book corpus. Hugging Face Datasets (2024),
+  \url{https://huggingface.co/datasets/incredible45/Gutenberg-BookCorpus-Cleaned-Data-English},
+  accessed 2026
+
+\bibitem{kasai2001linear}
+Kasai, T., Lee, G., Arimura, H., Arikawa, S., Park, K.: Linear-time
+  longest-common-prefix computation in suffix arrays and its applications. In:
+  Proc.\ 12th Annual Symposium on Combinatorial Pattern Matching (CPM). Lecture
+  Notes in Computer Science, vol.~2089, pp. 181--192. Springer (2001).
+  \doi{10.1007/3-540-48194-X_17}
+
+\bibitem{kugel2008space}
+K{\"u}gel, A., Ohlebusch, E.: A space efficient solution to the frequent string
+  mining problem for many databases. Data Mining and Knowledge Discovery
+  \textbf{17}(1),  24--38 (2008). \doi{10.1007/s10618-008-0110-5}
+
+\bibitem{manber1993suffix}
+Manber, U., Myers, E.W.: Suffix arrays: A new method for on-line string
+  searches. SIAM Journal on Computing  \textbf{22}(5),  935--948 (1993).
+  \doi{10.1137/0222058}
+
+\bibitem{navarro2007compressed}
+Navarro, G., M\"akinen, V.: Compressed full-text indexes. ACM Computing Surveys
+   \textbf{39}(1),  2:1--2:61 (2007). \doi{10.1145/1216370.1216372}
+
+\bibitem{nong2011saiis}
+Nong, G., Zhang, S., Chan, W.H.: Two efficient algorithms for linear time
+  suffix array construction. IEEE Transactions on Computers  \textbf{60}(10),
+  1471--1484 (2011). \doi{10.1109/TC.2010.188}
+
+\bibitem{ohlebusch2024chinese}
+Ohlebusch, E., B\"uchler, T., Olbrich, J.: Faster computation of chinese
+  frequent strings and their net frequencies. In: String Processing and
+  Information Retrieval --- 31st International Symposium, SPIRE 2024. Lecture
+  Notes in Computer Science, vol. 14899, pp. 249--256. Springer (2024).
+  \doi{10.1007/978-3-031-72200-4_19}
+
+\bibitem{pei2001prefixspan}
+Pei, J., Han, J., Mortazavi-Asl, B., Pinto, H., Chen, Q., Dayal, U., Hsu, M.C.:
+  Prefixspan: Mining sequential patterns efficiently by prefix-projected
+  pattern growth. In: Proceedings of the 17th International Conference on Data
+  Engineering. pp. 215--224. IEEE (2001)
+
+\bibitem{wang2004bide}
+Wang, J., Han, J.: Bide: Efficient mining of frequent closed sequences. In:
+  Proceedings of the 20th International Conference on Data Engineering. pp.
+  79--90. IEEE (2004)
+
+\bibitem{weese2008dfi}
+Weese, D., Schulz, M.H.: Efficient string mining under constraints via the
+  deferred frequency index. In: Proc.\ 8th Industrial Conference on Advances in
+  Data Mining (ICDM/ADMA). Lecture Notes in Computer Science, vol.~5077, pp.
+  374--388. Springer (2008). \doi{10.1007/978-3-540-70720-2_29}
+
+\bibitem{zipf1949human}
+Zipf, G.K.: Human Behavior and the Principle of Least Effort. Addison-Wesley,
+  Cambridge, MA (1949)
+
+\end{thebibliography}

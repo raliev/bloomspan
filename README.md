@@ -1,138 +1,206 @@
 # BloomSpan: Memory-Efficient Maximal Frequent Substring Mining for Large-Scale Text
 
-This repository presents BloomSpan, a memory-efficient algorithm for mining Maximal Contiguous Frequent Phrases (MCFPs) from large text corpora. MCFPs are strictly contiguous token sequences satisfying a minimum document-support threshold; unlike general Sequential Pattern Mining, no gaps are permitted. BloomSpan combines a Counting Bloom Filter for probabilistic frequency estimation with prioritized seed generation and depth-first expansion directly on the corpus, avoiding recursive projected databases. Seed generation is provably free of false negatives; output equivalence with exact baselines is confirmed on all Gutenberg-8k subsets where any baseline completes. On the Gutenberg-BookCorpus-Cleaned corpus (up to 3.07B tokens), BloomSpan achieves 11-15x faster wall-clock execution than FHK with up to 2x lower peak memory.
+This repository contains the source code and benchmark framework accompanying the paper:
+
+> **BloomSpan: Memory-Efficient Maximal Frequent Substring Mining for Large-Scale Text**
+> Rauf Aliev, Joeran Beel — University of Siegen, Germany
+
+The full paper is available in [`paper/bloomspan.pdf`](paper/bloomspan.pdf).
+
+## Overview
+
+BloomSpan is an algorithm for mining **Maximal Contiguous Frequent Phrases (MCFPs)** from large text corpora. MCFPs are strictly contiguous token sequences whose document-support meets a minimum threshold — unlike general Sequential Pattern Mining, no gaps are permitted.
+
+BloomSpan combines a **Counting Bloom Filter** for probabilistic frequency estimation with prioritized seed generation and depth-first expansion directly on the corpus, avoiding recursive projected databases. Key properties:
+
+- **No false negatives** in seed generation (provably; see Section 3.2 of the paper).
+- **Output equivalence** with exact baselines confirmed on all Gutenberg-8k subsets where any baseline completes.
+- **11--15x faster** wall-clock execution than FHK on the Gutenberg-BookCorpus-Cleaned corpus (up to 3.07B tokens), with up to **2x lower peak memory**.
+- The only evaluated algorithm to complete at 50,000 documents (~3B tokens) within a 40 GB heap.
+
+### Algorithm Pipeline
+
+BloomSpan operates in four phases:
+
+1. **Probabilistic Frequency Estimation** — A single linear pass populates a Counting Bloom Filter with all n-grams, providing a space-efficient frequency sketch.
+2. **Seed Candidate Generation** — Parallel corpus scan identifies n-gram seeds; candidates are pruned if their CBF estimate or any constituent unigram frequency falls below the threshold. A coverage score Psi(P) = |P| x df(P) prioritizes seeds.
+3. **DFS Expansion** — Expansion proceeds directly on the original corpus using a stack (no projected databases). An early pruning step eliminates inherently non-maximal candidates.
+4. **Maximality Check** — An inverted index keyed on each pattern's rarest token reduces the maximality check cost. A global occupancy bitmask flags positions of confirmed maximal patterns to skip redundant candidates.
+
+## Repository Structure
+
+```
+bloomspan/
+├── corpus-miner-java/    # Java benchmark framework (primary, used in paper evaluation)
+│   ├── src/               #   Source code for all algorithms
+│   ├── build.sh           #   Build script
+│   └── test_docs/         #   Small test corpus (3 documents)
+├── corpus-miner/          # C++ implementation (prototype)
+│   ├── _ours/             #   BloomSpan C++ implementation
+│   ├── bide/              #   BIDE+ implementation
+│   ├── Makefile           #   Build with `make`
+│   └── process_results_csv.py  # Post-processing & visualization
+├── spmf-jar/              # SPMF library dependency
+├── tests/                 # Test corpora and benchmark scripts
+│   ├── test1/             #   10-document test set
+│   ├── test-gen/          #   Synthetic dataset generator
+│   └── run-benchmark-*.py #   Benchmark runner scripts
+└── paper/                 # Paper source and compiled PDF
+    ├── main.tex           #   LaTeX source
+    ├── main.pdf           #   Compiled paper
+    ├── literature.bib     #   Bibliography
+    └── *.png              #   Figures
+```
 
 ## Getting Started
 
-### java version
+### Java Implementation (Primary)
 
-Compiling (tested with JDK 21):
+The Java implementation is the one used for all experiments reported in the paper. Tested with JDK 21.
+
+**Build:**
 ```bash
 cd corpus-miner-java
 ./build.sh
 ```
 
-Running (from `corpus-miner-java/`):
+**Run:**
 ```bash
 java -cp "../spmf-jar/spmf.jar:extensions.jar" com.bloomspan.benchmarks.BenchmarkRunner \
-  <algo> <folder> <minSupportAbs> <minLen> <outputCsv> [maxDocs]
+  <algorithm> <input_folder> <min_support> <min_length> <output_csv> [max_docs]
 ```
 
-Example with the included test corpus:
+**Example** (included test corpus):
 ```bash
 java -cp "../spmf-jar/spmf.jar:extensions.jar" com.bloomspan.benchmarks.BenchmarkRunner \
   bloomspan test_docs 2 3 out.csv
 ```
 
-Available algorithms: `bloomspan`, `vmsp`, `gst`, `bidecontiguous`, `bidecontiguousmaximal`, `fhk`, `dfi`
+**Parameters:**
+| Parameter | Description |
+|-----------|-------------|
+| `algorithm` | Algorithm to run (see below) |
+| `input_folder` | Directory containing `.txt` files (one document per file) |
+| `min_support` | Minimum number of documents a phrase must appear in (absolute) |
+| `min_length` | Minimum phrase length in tokens |
+| `output_csv` | Path for the output CSV file |
+| `max_docs` | *(Optional)* Limit the number of documents to process |
 
+**Available algorithms:**
 
+| Algorithm | Description |
+|-----------|-------------|
+| `bloomspan` | BloomSpan — proposed algorithm |
+| `fhk` | Fischer-Heun-Kramer (SA-IS + Kasai LCP, bottom-up traversal) |
+| `dfi` | Deferred Frequency Index (top-down DFS with RMQ sparse table) |
+| `gst` | Generalized Suffix Tree via suffix array + LCP |
+| `vmsp` | VMSP maximal sequential pattern miner (SPMF) |
+| `bidecontiguous` | BIDE+ restricted to contiguous extensions (SPMF) |
+| `bidecontiguousmaximal` | BIDE+ contiguous, maximal only (SPMF) |
 
-### C++ version
+**Output format** (`output_csv`):
+```csv
+phrase,freq,length,example_files
+"another unique phrase for testing",5,5,"file1.txt|file2.txt"
+```
 
+### C++ Implementation (Prototype)
+
+The C++ version is an earlier prototype with additional algorithms (BIDE, CloSpan, VMSP). It requires a C++20 compiler, OpenMP, and TBB.
+
+**Build:**
 ```bash
-cd corpus_miner
+cd corpus-miner
 make
+```
+
+**Run:**
+```bash
+./corpus_miner <input_dir_or_csv> [options]
+```
+
+**Options:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--n` | Minimum support (number of documents) | 10 |
+| `--ngrams` | Seed n-gram size | 4 |
+| `--min_l` | Minimum phrase length | — |
+| `--algo` | Algorithm: `bloomspan`, `bide`, `clospan`, `vmsp` | `bloomspan` |
+| `--threads` | Number of OpenMP threads (0 = all) | 0 |
+| `--mem` | Memory limit in MB for n-gram builder (0 = unlimited) | 0 |
+
+**Example:**
+```bash
 ./corpus_miner ../tests/test1 --ngrams 3 --n 3 --algo bloomspan
-cat results_max.csv
-python3 process_results_csv.py --min_l=3
+```
+
+**Post-processing and visualization:**
+```bash
+python3 process_results_csv.py --input results_max.csv --min_l 3
 open visualization.html
 ```
 
+## Reproducing Paper Experiments
 
-## Algorithms
+All experiments in the paper use the Java implementation with the following setup:
 
-The framework supports multiple mining strategies depending on the research objective:
+- **Hardware:** Intel Core Ultra 9 285K, 64 GB RAM
+- **JVM:** OpenJDK 21, `-Xmx40g`
+- **Protocol:** 6 runs per configuration; first run discarded (JVM warm-up); medians with IQR over remaining 5
 
-### 1. Primary Algorithm: BloomSpan Miner (Default)
+### Datasets
 
-The native "Default" mode is an optimized algorithm designed for extracting contiguous frequent phrases. It uses a **Counting Bloom Filter** to estimate n-gram frequencies with a very small memory footprint, followed by a priority-based expansion using the scoring function $\Psi(P) = |P| \times df(P)$.
+| Dataset | Source | Parameters |
+|---------|--------|------------|
+| Synthetic 1 (Sparse) | Generated via `tests/generate_test_dataset.py` | sigma=3, min length 3 |
+| Synthetic 2 (Dense Overlaps) | 300 overlapping injections, N=15,000 | — |
+| Gutenberg-8k | [Fhrozen/gutenberg8k](https://huggingface.co/datasets/Fhrozen/gutenberg8k) | sigma=10, min length 5 |
+| Gutenberg-BookCorpus-Cleaned | [laihuiyuan/gutenberg-bookcorpus-cleaned](https://huggingface.co/datasets/laihuiyuan/gutenberg-bookcorpus-cleaned) | sigma=20, min length 10 |
 
-* **Usage**: Run without `--algo` or with `--algo bloomspan`.
+### Generating Synthetic Test Data
 
-### 2. BIDE+ Miner
-A high-performance C++ implementation of the **BIDE+** (Bidirectional Extension) algorithm. Unlike the default miner, BIDE+ is designed to find **Closed Sequential Patterns**, ensuring that a frequent phrase is only reported if it cannot be extended in either direction without losing support.
-
-* **Usage**: Use the flag `--algo bide`.
-
-### 3. SPMF Integration (Benchmarking)
-The framework includes a wrapper for the **SPMF (Sequential Pattern Mining Framework)** library. This is intended solely for **comparative analysis and testing**.
-
-* **Setup**: Download `spmf.jar` from the [official site](http://www.philippe-fournier-viger.com/spmf/) and place it in the same directory as the `corpus_miner` binary.
-* **Usage**: Use the flag `--spmf` and `--spmf-params "<params>"` and `--spmf-location /path/to/spmf.jar`.
-
-Вот перевод описания новизны вашего алгоритма на английский язык, а также готовая секция для вашего README.md.
-
-Novelty of the BloomNgramMiner Algorithm
-The novelty of the BloomNgramMiner lies in its unique combination of probabilistic data structures, out-of-core processing, and a greedy expansion strategy designed specifically for large-scale text corpora.
-
-📝 README Section (Markdown)
-Markdown
-
-## Algorithm Novelty: BloomSpan vs BIDE+
-
-The `BloomSpan` is a high-performance sequential phrase discovery algorithm designed to handle datasets that exceed available RAM. It introduces several key innovations:
-
-### 1. Probabilistic Frequency Estimation (Bloom Pass)
-Unlike traditional miners that store all n-gram candidates, this algorithm performs a **pre-emptive frequency estimation**:
-* **Bloom Filter with Counters**: It uses a thread-safe Bloom Filter to estimate n-gram frequencies in a single pass.
-* **Noise Reduction**: N-grams with a frequency lower than the `min_docs` threshold are discarded immediately, preventing memory explosion from rare sequences.
-
-### 2. Greedy Expansion with Path Compression
-The core mining logic employs a "Seed-and-Expand" strategy with significant optimizations:
-* **Jumps**: Starting from an n-gram seed, the algorithm greedily expands to the right by selecting the most frequent subsequent tokens.
-* **Global Pruning**: A bit-matrix (or vector of booleans) tracks already processed positions in the corpus. Once a long phrase is found, its constituent tokens are marked, preventing the redundant discovery of sub-phrases.
-
-### 3. Hybrid Memory-Efficient Storage (optional)
-The algorithm utilizes a custom `RawSeedEntry` structure to optimize memory footprint:
-* **Fixed vs. Dynamic**: It uses a fixed-size array for short n-grams (up to 16 tokens) to avoid frequent heap allocations.
-* **Switching Logic**: It transparently switches to dynamic vector storage only when the sequence length exceeds the threshold.
-
-The miner is built for "Big Data" scenarios through a robust disk-based architecture:
-* **External Merge Sort**: When RAM usage reaches a defined limit, the algorithm flushes sorted "chunks" of candidates to disk.
-* **Priority Queue Merging**: It reconstructs the final candidate list using a disk-aware merge sort, allowing it to process corpora of virtually any size.
-
-### 4. Multi-threaded Score Prioritization
-Before expansion, candidates are prioritized based on a scoring function: $Score = Support \times Length$. This ensures that the most "descriptive" and heavy-weight phrases are processed first, maximizing the efficiency of the pruning bit-matrix.
-
-## Configuration and CLI Flags
-
-### C++ Core Engine Parameters
-
-the first parameter is a directory or a CSV file. In case of a directory, all files are read, recursively. In case of CSV file, all rows are considered to be "documents".
-
-Optional parameters:
-
-* `--n`: **Minimum Support Threshold.** The minimum number of *unique documents* required for a phrase to be considered frequent. This is not a percentage, it is an absolute value of the number of documents.
-* `--ngrams`: **Minimum Phrase Length.** Filters out trivial short sequences (e.g., set to 5+ for boilerplate).
-* `--algo`: Algorithm selection (`bloom` (default), `bide`).
-* `--threads`: To limit the number of OpenMP threads (defaults to hardware maximum; used only by the default algorithm, bloomspan).
-* `--mem`: To limit the memory use by a ngram builder (used only by the default algorithm, bloomspan).
-
-## Synthetic Data & Evaluation
-
-To support scientific validation of precision and recall, the repository includes specialized utility scripts:
-
-### Dataset Generator
-
-Use `generate_test_dataset.py` to create a synthetic corpus with embedded "golden" patterns. This allows researchers to verify if the algorithms can recover known fragments at specific frequency and length thresholds.
 ```bash
+cd tests
 python3 generate_test_dataset.py
 ```
 
-It creates 100,000 documents in the ..`/test/generated` folder. Each document has 500 unique, synthetic words (which makes a dictionary of 50M unique words). It also injects the phrases into random documents according to the injection rules listed in the `generate_test_dataset.csv`:
+This creates 100,000 documents with embedded "golden" phrases defined in `generate_test_dataset.csv`, enabling precision/recall validation.
 
-```csv
-"This is the first test sentence",3
-"Another unique phrase for testing",5
-"A third sentence",4
+## Key Results
+
+Results on **Gutenberg-BookCorpus-Cleaned** (sigma=20, min phrase length 10). Wall-clock time in seconds; peak heap memory in MB. Medians over five measured runs. OOM = Out of Memory (40 GB heap).
+
+| N | BloomSpan | | FHK | | DFI | | Speedup | MCFPs |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| | **Time (s)** | **Mem (MB)** | **Time (s)** | **Mem (MB)** | **Time (s)** | **Mem (MB)** | **(FHK/BS)** | |
+| 1,000 | 1.73 | 5,095 | 19.08 | 6,591 | 20.17 | 9,138 | 11.0x | 31 |
+| 3,000 | 4.16 | 7,836 | 60.34 | 7,856 | 67.25 | 29,393 | 14.5x | 120 |
+| 5,000 | 6.64 | 6,977 | 101.33 | 11,238 | OOM | OOM | 15.3x | 217 |
+| 8,000 | 10.41 | 8,853 | 160.37 | 16,708 | OOM | OOM | 15.4x | 375 |
+| 10,000 | 13.59 | 12,044 | 199.34 | 20,764 | OOM | OOM | 14.7x | 516 |
+| 15,000 | 20.80 | 14,979 | 308.67 | 31,549 | OOM | OOM | 14.8x | 1,034 |
+| 20,000 | 27.67 | 20,839 | — | — | OOM | OOM | — | 1,964 |
+| 30,000 | 44.61 | 29,385 | 662.24 | 38,461 | OOM | OOM | 14.8x | 3,673 |
+| 50,000 | 383.27 | 38,873 | OOM | OOM | OOM | OOM | — | — |
+
+**Notes:**
+- DFI's O(n log n) RMQ sparse table exhausts the 40 GB heap beyond N=3,000. FHK completes through N=30,000 before running out of memory. BloomSpan is the only algorithm to complete at N=50,000 (~3.07B tokens).
+- BloomSpan's per-token mining cost remains approximately constant (0.021--0.027 us/token) up to N=30,000, corresponding to near-linear scaling (log-log slope 0.98). At N=50,000 the cost rises to 0.125 us/token as the output-sensitive maximality phase becomes the bottleneck.
+- On the smaller Gutenberg-8k dataset (sigma=10, min length 5), FHK and DFI are marginally faster at large N due to the permissive threshold producing a large MCFP set (~218k phrases at N=5,000). On synthetic datasets, FHK is consistently fastest. See the paper for full results across all four datasets.
+
+## Citation
+
+If you use BloomSpan in your research, please cite:
+
+```bibtex
+@inproceedings{aliev2026bloomspan,
+  title     = {BloomSpan: Memory-Efficient Maximal Frequent Substring Mining for Large-Scale Text},
+  author    = {Aliev, Rauf and Beel, Joeran},
+  year      = {2026},
+  institution = {University of Siegen}
+}
 ```
 
-It is expected that running `./corpus_miner ../tests/generated --ngrams 3 --n 3` should create a file `results_max.csv` of the following structure:
+## License
 
-```csv
-phrase,freq,length,example_files
-"another unique phrase for testing",5,5,"../tests/generated/test_file_74385.txt|../tests/generated/test_file_82694.txt"
-"a third sentence",4,3,"../tests/generated/test_file_10549.txt|../tests/generated/test_file_36741.txt"
-"this is the first test sentence",3,6,"../tests/generated/test_file_67301.txt|../tests/generated/test_file_91313.txt"
-```
+This repository is provided for research purposes. The SPMF library (`spmf-jar/spmf.jar`) is subject to its own [license terms](http://www.philippe-fournier-viger.com/spmf/).

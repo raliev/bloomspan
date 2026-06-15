@@ -1,6 +1,6 @@
 # Detect if we are on macOS
 UNAME_S := $(shell uname -s)
-OPT ?= -O1
+OPT ?= -O3
 OPENMP ?= -fopenmp
 
 ifeq ($(UNAME_S), Darwin)
@@ -31,6 +31,7 @@ SRCS = main.cpp corpus_miner.cpp \
          _ours/bloom_gram_miner.cpp \
           bide/bide_miner.cpp \
        clospan/clospan_miner.cpp \
+          vmsp/vmsp_miner.cpp \
        signal_handler.cpp
 OBJS = $(SRCS:.cpp=.o)
 

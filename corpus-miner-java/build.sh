@@ -14,6 +14,8 @@ mkdir -p out
 javac -Xlint:none -cp "../spmf-jar/spmf.jar:src" \
     src/ca/pfv/spmf/algorithms/sequentialpatterns/spam/*.java \
     src/ca/pfv/spmf/algorithms/sequentialpatterns/BIDE_and_prefixspan/*.java \
+    src/ca/pfv/spmf/algorithms/sequentialpatterns/fhk/*.java \
+    src/ca/pfv/spmf/algorithms/sequentialpatterns/dfi/*.java \
     src/com/bloomspan/benchmarks/BenchmarkRunner.java \
     -d out
 
@@ -23,4 +25,7 @@ jar cf extensions.jar -C out .
 echo "Build successful! Created extensions.jar."
 echo ""
 echo "To run the benchmark:"
-echo "java -cp \"../spmf.jar:extensions.jar\" BenchmarkRunner <algo> <folder> <minSupportAbs> <minLen> <outputCsv>"
+echo "java -cp \"../spmf-jar/spmf.jar:extensions.jar\" com.bloomspan.benchmarks.BenchmarkRunner <algo> <folder> <minSupportAbs> <minLen> <outputCsv>"
+echo
+echo "Example with the included test corpus:"
+echo "java -cp \"../spmf-jar/spmf.jar:extensions.jar\" com.bloomspan.benchmarks.BenchmarkRunner bloomspan test_docs 2 3 out.csv"

@@ -12,6 +12,8 @@ import ca.pfv.spmf.algorithms.sequentialpatterns.spam.Bitmap;
 import ca.pfv.spmf.algorithms.sequentialpatterns.spam.AlgoBloomSpan;
 import ca.pfv.spmf.algorithms.sequentialpatterns.spam.AlgoGST;
 import ca.pfv.spmf.algorithms.sequentialpatterns.BIDE_and_prefixspan.AlgoBIDEPlusContiguous;
+import ca.pfv.spmf.algorithms.sequentialpatterns.fhk.AlgoFHK;
+import ca.pfv.spmf.algorithms.sequentialpatterns.dfi.AlgoDFI;
 
 public class BenchmarkRunner {
     private static final Map<String, Integer> wordToIdMap = new HashMap<>();
@@ -60,8 +62,8 @@ public class BenchmarkRunner {
 
         // 2. Execute Algorithm
         long startTime = System.currentTimeMillis();
-        List<TreeSet<PatternVMSP>> results = null;
-        List<AlgoBloomSpan.Phrase> bloomSpanResults = null;
+        List<TreeSet<PatternVMSP>> spmfResults = null;
+        List<AlgoBloomSpan.Phrase> phraseResults = null;
 
         // We use a temporary file for SPMF's internal output to avoid
         // NullPointerException
@@ -71,24 +73,32 @@ public class BenchmarkRunner {
             AlgoVMSP algoInstance = new AlgoVMSP();
             algoInstance.setMaxGap(1); // Contiguous constraint
             algoInstance.showSequenceIdentifiersInOutput(true);
-            results = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+            spmfResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
         } else if (algo.equals("bloomspan")) {
             AlgoBloomSpan algoInstance = new AlgoBloomSpan();
             algoInstance.setMinL(minLen);
             algoInstance.setNgrams(minLen);
-            bloomSpanResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+            phraseResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
         } else if (algo.equals("gst")) {
             AlgoGST algoInstance = new AlgoGST();
             algoInstance.setMinL(minLen);
-            results = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+            spmfResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
         } else if (algo.equals("bidecontiguous")) {
             AlgoBIDEPlusContiguous algoInstance = new AlgoBIDEPlusContiguous();
             algoInstance.setMinL(minLen);
-            results = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+            spmfResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
         } else if (algo.equals("bidecontiguousmaximal")) {
             AlgoBIDEPlusContiguousMaximal algoInstance = new AlgoBIDEPlusContiguousMaximal();
             algoInstance.setMinL(minLen);
-            results = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+            spmfResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+        } else if (algo.equals("fhk")) {
+            AlgoFHK algoInstance = new AlgoFHK();
+            algoInstance.setMinL(minLen);
+            phraseResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
+        } else if (algo.equals("dfi")) {
+            AlgoDFI algoInstance = new AlgoDFI();
+            algoInstance.setMinL(minLen);
+            phraseResults = algoInstance.runAlgorithm(convertedFile, spmfInternalOutput, minSupportRel);
         } else {
             System.out.println("Unknown algorithm: " + algo);
             return;
@@ -98,13 +108,13 @@ public class BenchmarkRunner {
         // 3. Export to your custom CSV
         System.out.println("--- STATISTICS ---");
         System.out.println("Time_ms: " + (endTime - startTime));
-        if (algo.equals("bloomspan")) {
-            saveBloomSpanResultsToCSV(bloomSpanResults, outputCsv);
-            int count = (bloomSpanResults != null) ? bloomSpanResults.size() : 0;
+        if (algo.equals("bloomspan") || algo.equals("fhk") || algo.equals("dfi")) {
+            saveBloomSpanResultsToCSV(phraseResults, outputCsv);
+            int count = (phraseResults != null) ? phraseResults.size() : 0;
             System.out.println("Found_Phrases: " + count);
         } else {
-            saveResultsToCSV(results, outputCsv);
-            System.out.println("Found_Phrases: " + countPatterns(results));
+            saveResultsToCSV(spmfResults, outputCsv);
+            System.out.println("Found_Phrases: " + countPatterns(spmfResults));
         }
 
         // Clean up temporary files
@@ -121,11 +131,13 @@ public class BenchmarkRunner {
             for (AlgoBloomSpan.Phrase pattern : results) {
                 String phrase = Arrays.stream(pattern.tokens)
                         .mapToObj(idToWordMap::get)
-                        .collect(Collectors.joining(" "));
+                        .collect(Collectors.joining(" "))
+                        .replace("\"", "\"\"");
 
                 String exampleFiles = pattern.occs.stream()
                         .map(o -> sidToFileMap.get(o.docId))
                         .distinct()
+                        .sorted()
                         .collect(Collectors.joining("|"));
 
                 pw.printf("\"%s\",%d,%d,\"%s\"%n",
@@ -202,7 +214,8 @@ public class BenchmarkRunner {
                     String phrase = pattern.getPrefix().getItemsets().stream()
                             .flatMap(is -> is.getItems().stream())
                             .map(idToWordMap::get)
-                            .collect(Collectors.joining(" "));
+                            .collect(Collectors.joining(" "))
+                            .replace("\"", "\"\"");
 
                     Bitmap bitmap = (Bitmap) bitmapField.get(pattern);
                     String exampleFiles = decodeSIDs(bitmap);
@@ -221,6 +234,7 @@ public class BenchmarkRunner {
         return Arrays.stream(sids.split(" "))
                 .filter(s -> !s.isEmpty())
                 .map(s -> sidToFileMap.get(Integer.parseInt(s)))
+                .sorted()
                 .collect(Collectors.joining("|"));
     }
 

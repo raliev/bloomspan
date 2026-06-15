@@ -25,6 +25,7 @@ private:
     size_t memory_limit_mb = 0;
 
     std::string file_mask = "";
+    int first_n = 0;
 
     size_t get_current_rss_mb();
 
@@ -55,6 +56,7 @@ public:
               int min_l);
 
     void set_mask(const std::string& mask) { file_mask = mask; }
+    void set_first_n(int n) { first_n = n; }
 
     void set_limits(int threads, size_t mem_mb, size_t cache_size, bool in_mem, bool preload, int min_l) {
         max_threads    = threads;

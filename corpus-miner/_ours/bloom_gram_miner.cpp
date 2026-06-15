@@ -3,6 +3,7 @@
 #include "../signal_handler.h"
 #include <filesystem>
 #include <iostream>
+#include <stack>
 #include <fstream>
 #include <execution>
 #include <queue>
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <vector>
 #include <unistd.h>
+#include <algorithm> // Added for std::search
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
@@ -242,8 +244,40 @@ inline uint64_t hash_tokens(const uint32_t* tokens, int n) {
     return h;
 }
 
+static bool isSubArray(const std::vector<uint32_t>& larger, const std::vector<uint32_t>& smaller) {
+    if (smaller.empty()) return true;
+    if (smaller.size() > larger.size()) return false;
+
+    uint32_t first_token = smaller[0];
+    bool found_first = false;
+    size_t max_start = larger.size() - smaller.size();
+    for (size_t i = 0; i <= max_start; ++i) {
+        if (larger[i] == first_token) {
+            found_first = true;
+            break;
+        }
+    }
+    if (!found_first) return false;
+
+    for (size_t i = 0; i <= max_start; ++i) {
+        if (larger[i] != first_token) continue;
+        bool match = true;
+        for (size_t j = 1; j < smaller.size(); ++j) {
+            if (larger[i + j] != smaller[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
 std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
                                           const MiningParams& params) {
+
+    auto mine_start = start_timer();
+
     // Unpack params
     int min_docs = params.min_docs;
     int ngrams   = params.ngrams;
@@ -340,7 +374,6 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
     // we have not saved the ngrams themselves anywhere (because for the large datasets this number can skyrocket)
 
     // Pass 2: Collection with Statistics
-    auto mine_start = start_timer();
     std::cout << "[LOG] Step 1: Gathering " << ngrams << "-gram seeds..." << std::endl;
     auto s1_start = start_timer();
     size_t total_processed = 0;
@@ -444,27 +477,22 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
         }
     }
 
-    // Print Efficiency Statistics
-    double efficiency = (total_processed > 0)
-                            ? (100.0 * seeds_rejected / total_processed)
-                            : 0;
+    double efficiency = (total_processed > 0) ? (100.0 * seeds_rejected / total_processed) : 0;
     std::cout << "\n[BLOOM STATS] Total n-grams: " << total_processed << std::endl;
     std::cout << "[BLOOM STATS] Accepted:    " << seeds_passed << std::endl;
-    std::cout << "[BLOOM STATS] Rejected:    " << seeds_rejected
-              << " (" << efficiency << "% reduction)" << std::endl;
+    std::cout << "[BLOOM STATS] Rejected:    " << seeds_rejected << " (" << efficiency << "% reduction)" << std::endl;
 
     filter_counters.clear();
     filter_counters.shrink_to_fit();
-    if (in_memory_only) {
-        std::cout << "[LOG] In-Memory Mode: Sorting all " << buffer.size()
-                  << " seeds in RAM..." << std::endl;
+    
+    bool merge_in_memory = chunk_files.empty();
+    if (merge_in_memory) {
+        std::cout << "[LOG] Sorting all " << buffer.size() << " seeds in RAM..." << std::endl;
         std::sort(std::execution::par, buffer.begin(), buffer.end(),
                   [](const RawSeedEntry& a, const RawSeedEntry& b) {
                       for (int i = 0; i < a.n; ++i) {
-                          uint32_t a_token = (a.is_dynamic) ? (*a.tokens.dynamic_tokens)[i]
-                                                            : a.tokens.fixed_tokens[i];
-                          uint32_t b_token = (b.is_dynamic) ? (*b.tokens.dynamic_tokens)[i]
-                                                            : b.tokens.fixed_tokens[i];
+                          uint32_t a_token = (a.is_dynamic) ? (*a.tokens.dynamic_tokens)[i] : a.tokens.fixed_tokens[i];
+                          uint32_t b_token = (b.is_dynamic) ? (*b.tokens.dynamic_tokens)[i] : b.tokens.fixed_tokens[i];
                           if (a_token != b_token) return a_token < b_token;
                       }
                       if (a.doc_id != b.doc_id) return a.doc_id < b.doc_id;
@@ -475,11 +503,11 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
     }
     std::cout << std::endl;
 
-    // --- START OF STEP 1.5 ---
+    // Step 1.5: Merging and filtering candidates
     std::cout << "[LOG] Step 1.5: Merging and filtering candidates..." << std::endl;
     std::vector<Phrase> candidates;
 
-    if (in_memory_only) {
+    if (merge_in_memory) {
         // --- PATH A: In-Memory Processing ---
         size_t i = 0;
         while (i < buffer.size()) {
@@ -502,15 +530,12 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
                                         ? (*representative.tokens.dynamic_tokens)[k]
                                         : representative.tokens.fixed_tokens[k];
                 }
-                candidates.push_back(
-                    {tokens_vec, std::move(current_occs), unique_docs.size()});
+                candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
             }
         }
-        // Free RAM immediately
         buffer.clear();
         buffer.shrink_to_fit();
     } else {
-        // --- PATH B: Disk-Based External Merge ---
         struct ChunkReader {
             std::ifstream stream;
             RawSeedEntry current;
@@ -518,15 +543,9 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
             bool next() {
                 try {
                     current.read_from_stream(stream);
-                    if (!stream) {
-                        active = false;
-                        return false;
-                    }
+                    if (!stream) { active = false; return false; }
                     return true;
-                } catch (...) {
-                    active = false;
-                    return false;
-                }
+                } catch (...) { active = false; return false; }
             }
         };
 
@@ -552,164 +571,361 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
             while (!pq.empty() && pq.top()->current.same_tokens(representative)) {
                 ChunkReader* r = pq.top();
                 pq.pop();
-
                 current_occs.push_back({r->current.doc_id, r->current.pos});
                 unique_docs.insert(r->current.doc_id);
-
                 if (r->next()) pq.push(r);
             }
 
             if (unique_docs.size() >= (size_t)min_docs) {
                 std::vector<uint32_t> tokens_vec(ngrams);
                 for (int k = 0; k < ngrams; ++k) {
-                    tokens_vec[k] = (representative.is_dynamic)
-                                        ? (*representative.tokens.dynamic_tokens)[k]
-                                        : representative.tokens.fixed_tokens[k];
+                    tokens_vec[k] = (representative.is_dynamic) ? (*representative.tokens.dynamic_tokens)[k] : representative.tokens.fixed_tokens[k];
                 }
-                candidates.push_back(
-                    {tokens_vec, std::move(current_occs), unique_docs.size()});
+                candidates.push_back({tokens_vec, std::move(current_occs), unique_docs.size()});
             }
         }
 
-        // Cleanup Disk Resources
-        for (auto& r : readers) {
-            if (r->stream.is_open()) r->stream.close();
-        }
+        for (auto& r : readers) if (r->stream.is_open()) r->stream.close();
         readers.clear();
-
-        try {
-            if (fs::exists(temp_dir)) {
-                fs::remove_all(temp_dir);
-                std::cout << "[LOG] Step 1.5: Temporary directory and chunk files removed."
-                          << std::endl;
-            }
-        } catch (const fs::filesystem_error& e) {
-            std::cerr << "[WARNING] Cleanup failed: " << e.what() << std::endl;
-        }
+        try { if (fs::exists(temp_dir)) { fs::remove_all(temp_dir); std::cout << "[LOG] Step 1.5: Temporary directory and chunk files removed." << std::endl; } }
+        catch (const fs::filesystem_error& e) { std::cerr << "[WARNING] Cleanup failed: " << e.what() << std::endl; }
     }
-    // --- END OF STEP 1.5 ---
 
     size_t total_seeds_generated = candidates.size();
     stop_timer(std::to_string(ngrams) + "-gram Seed Generation (Disk)", s1_start);
 
-    std::cout << "[LOG] Step 2: Sorting " << candidates.size()
-              << " candidates by score (support * length)..." << std::endl;
-
-    std::sort(std::execution::par, candidates.begin(), candidates.end(),
-              [](const Phrase& a, const Phrase& b) {
-                  size_t score_a = a.support * a.tokens.size();
-                  size_t score_b = b.support * b.tokens.size();
-
-                  if (score_a != score_b) {
-                      return score_a > score_b; // Сначала те, что покрывают больше текста
-                  }
-                  return a.support > b.support; // При равном весе — те, что чаще
-              });
+    std::cout << "[LOG] Step 2: Sorting " << candidates.size() << " candidates by score (support * length)..." << std::endl;
+    std::sort(candidates.begin(), candidates.end(), [](const Phrase& a, const Phrase& b) {
+        int scoreA = a.support * a.tokens.size();
+        int scoreB = b.support * b.tokens.size();
+        if (scoreA != scoreB) return scoreA > scoreB; // Score descending
+        if (a.tokens.size() != b.tokens.size()) return a.tokens.size() > b.tokens.size(); // Length descending
+        return a.tokens < b.tokens; // Lexicographical tie-breaker
+    });
 
     std::cout << "[LOG] Step 3: Expanding with Path Compression (Jumps)..." << std::endl;
     auto s3_start = start_timer();
     std::vector<Phrase> final_phrases;
 
-    std::vector<std::vector<bool>> processed(doc_lengths.size());
+    // Faster flat-array data structures replacing slow unordered_map memory fragmentation
+    std::vector<std::vector<size_t>> existing_by_length(100); // Max reasonable phrase length pool
+    std::vector<std::vector<size_t>> inverted_index(id_to_word.size());
+
+    // Compute flat token offsets for 1D processed matrix (doc_offsets is in bytes!)
+    std::vector<size_t> token_offsets(doc_lengths.size() + 1, 0);
+    size_t total_corpus_tokens = 0;
     for (size_t i = 0; i < doc_lengths.size(); ++i) {
-        processed[i].assign(doc_lengths[i], false);
+        token_offsets[i] = total_corpus_tokens;
+        total_corpus_tokens += doc_lengths[i];
     }
+    token_offsets[doc_lengths.size()] = total_corpus_tokens;
+
+    // 1D processed matrix
+    std::vector<uint8_t> processed(total_corpus_tokens, 0);
+
+    // Fast O(N) bucketing arrays to replace HashMap/Sorting overhead
+    std::vector<int> group_head(id_to_word.size(), -1);
+    std::vector<int> group_next; // Will resize to current.occs.size() dynamically
+    std::vector<uint32_t> active_words;
+
+    uint64_t ns_extend = 0;
+    uint64_t ns_maximal = 0;
+    uint64_t ext_loop_count = 0;
+    uint64_t max_loop_count = 0;
+    uint64_t ext_dfs_count = 0;
+
+    // Fast flat array pools to replace dynamic map and set instantiations inside DFS
+    // Hoisted outside to avoid billions of vector instantiations across all candidate trees
+    std::vector<uint32_t> active_ext;
+    active_ext.reserve(1024);
+    
+    std::vector<uint8_t> doc_seen(doc_lengths.size(), 0);
+    std::vector<uint32_t> active_docs;
+    active_docs.reserve(doc_lengths.size());
+
+    // TLAB-simulated pre-allocated pools to bypass malloc locking overhead
+    std::vector<uint32_t> pool_valid_words;
+    std::vector<Occurrence> pool_group_occs;
+    std::vector<uint32_t> pool_unique_docs;
+    pool_valid_words.reserve(100000);
+    pool_group_occs.reserve(100000);
+    pool_unique_docs.reserve(doc_lengths.size());
 
     for (size_t c_idx = 0; c_idx < candidates.size(); ++c_idx) {
-        if (g_stop_requested) {
-            std::cout << "\n[!] Expansion interrupted. Moving to save results..."
-                      << std::endl;
-            break;
-        }
+            auto& cand = candidates[c_idx];
 
-        if (c_idx % 100 == 0 || c_idx == candidates.size() - 1) {
-            std::cout << "[LOG] Expanding: " << (c_idx + 1) << "/" << candidates.size()
-                      << " | Phrases found: " << final_phrases.size()
-                      << "          \r" << std::flush;
-        }
-
-        auto& cand = candidates[c_idx];
-
-        bool all_processed = true;
-        for (auto& o : cand.occs) {
-            if (!processed[o.doc_id][o.pos]) {
-                all_processed = false;
-                break;
+            // Progress reporting
+            if (c_idx % 100 == 0 || c_idx == candidates.size() - 1) {
+                std::cout << "[LOG] Expanding: " << (c_idx + 1) << "/" << candidates.size()
+                          << " | Phrases found: " << final_phrases.size() << "          \r" << std::flush;
             }
-        }
-        if (all_processed) continue;
 
-        while (true) {
-            std::unordered_map<uint32_t, std::vector<Occurrence>> next_word_occs;
-            for (auto& o : cand.occs) {
-                const auto& doc = corpus.get_doc(o.doc_id);
-                uint32_t np = o.pos + (uint32_t)cand.tokens.size();
-                if (np < doc.size()) {
-                    next_word_occs[doc[np]].push_back(o);
+            // Processed check to skip redundant work - check ALL tokens in the candidate
+            // Prune branch if its occurrences are already fully covered by another maximal phrase
+            bool all_processed = true;
+            for (const auto& o : cand.occs) {
+                size_t flat_base = token_offsets[o.doc_id];
+                size_t dlen = corpus.get_doc(o.doc_id).size();
+                size_t limit = (o.pos + cand.tokens.size() <= dlen) ? cand.tokens.size() : (dlen > o.pos ? dlen - o.pos : 0);
+                
+                for (size_t i = 0; i < limit; ++i) {
+                    if (!processed[flat_base + o.pos + i]) {
+                        all_processed = false;
+                        break;
+                    }
                 }
-            }
-
-            uint32_t best_word = 0;
-            size_t max_support = 0;
-            std::vector<Occurrence> best_next_occs;
-
-            for (auto& [word, occs] : next_word_occs) {
-                std::unordered_set<uint32_t> unique_docs;
-                for (auto& o : occs) unique_docs.insert(o.doc_id);
-
-                if (unique_docs.size() >= (size_t)min_docs &&
-                    unique_docs.size() >= max_support) {
-                    max_support = unique_docs.size();
-                    best_word = word;
-                    best_next_occs = std::move(occs);
+                if (!all_processed) break;
+            }          if (all_processed) {
+                if (c_idx == candidates.size() - 1) {
+                    std::cout << "\n[PROFILE] Extension MS: " << (ns_extend / 1000000) 
+                              << " | Maximality MS: " << (ns_maximal / 1000000)
+                              << " | DFS Nodes: " << ext_dfs_count
+                              << " | Ext Iterations: " << ext_loop_count
+                              << " | Max Iterations: " << max_loop_count << std::endl;
                 }
+                continue;
             }
 
-            if (max_support > 0) {
-                cand.tokens.push_back(best_word);
-                cand.occs = std::move(best_next_occs);
-                cand.support = max_support;
-            } else break;
-        }
+            // Use a stack to handle branching from this seed (DFS)
+            std::stack<Phrase> stack;
+            stack.push(std::move(cand));
 
-        if (!cand.occs.empty()) {
-                    bool has_common_prefix = false;
-                    uint32_t first_doc = cand.occs[0].doc_id;
-                    int first_pos = (int)cand.occs[0].pos;
+            while (!stack.empty()) {
+                ext_dfs_count++;
+                Phrase current = std::move(stack.top());
+                stack.pop();
 
+                // Backward-extension check (Local Pruning)
+                auto t_ext_start = std::chrono::high_resolution_clock::now();
+                bool can_extend_left = false;
+                if (!current.occs.empty()) {
+                    uint32_t first_doc = current.occs[0].doc_id;
+                    uint32_t first_pos = current.occs[0].pos;
                     if (first_pos > 0) {
                         uint32_t common_prev = corpus.get_doc(first_doc)[first_pos - 1];
                         bool all_match = true;
-                        for (const auto& o : cand.occs) {
+                        for (auto& o : current.occs) {
                             if (o.pos == 0 || corpus.get_doc(o.doc_id)[o.pos - 1] != common_prev) {
                                 all_match = false;
                                 break;
                             }
                         }
-                        if (all_match) has_common_prefix = true;
-                    }
-
-                    if (has_common_prefix) {
-                        continue; // Skip this phrase: it is not backward-closed
+                        if (all_match) can_extend_left = true;
                     }
                 }
 
-        for (auto& o : cand.occs) {
-            for (uint32_t i = 0; i < (uint32_t)cand.tokens.size(); ++i) {
-                if (o.pos + i < processed[o.doc_id].size())
-                    processed[o.doc_id][o.pos + i] = true;
+                if (can_extend_left) {
+                    auto t_ext_end = std::chrono::high_resolution_clock::now();
+                    ns_extend += std::chrono::duration_cast<std::chrono::nanoseconds>(t_ext_end - t_ext_start).count();
+                    continue; // Prune branch completely
+                }
+
+                // 2. Processed Mask Pruning (Local Pruning)
+                // O(1) flat array scan prevents O(N^2) Maximality Check later
+                bool all_processed = true;
+                for (const auto& o : current.occs) {
+                    size_t flat_base = token_offsets[o.doc_id];
+                    size_t dlen = corpus.get_doc(o.doc_id).size();
+                    size_t limit = (o.pos + current.tokens.size() <= dlen) ? current.tokens.size() : (dlen > o.pos ? dlen - o.pos : 0);
+
+                    for (size_t i = 0; i < limit; ++i) {
+                        if (!processed[flat_base + o.pos + i]) {
+                            all_processed = false;
+                            break;
+                        }
+                    }
+                    if (!all_processed) break;
+                }
+                
+                if (all_processed) {
+                    auto t_ext_end = std::chrono::high_resolution_clock::now();
+                    ns_extend += std::chrono::duration_cast<std::chrono::nanoseconds>(t_ext_end - t_ext_start).count();
+                    continue;
+                }
+
+                // Use an O(N) array-backed linked list to group occurrences by next token
+                // Bypasses std::sort() O(N log N) overhead and std::unordered_map malloc locking
+                size_t c_size = current.occs.size();
+                if (group_next.size() < c_size) group_next.resize(c_size, -1);
+                active_words.clear();
+
+                pool_valid_words.clear();
+
+                for (size_t i = 0; i < c_size; ++i) {
+                    ext_loop_count++;
+                    const auto& o = current.occs[i];
+                    const auto& doc = corpus.get_doc(o.doc_id);
+                    uint32_t np = o.pos + (uint32_t)current.tokens.size();
+                    
+                    if (np < doc.size()) {
+                        uint32_t word = doc[np];
+                        pool_valid_words.push_back(word);
+
+                        if (group_head[word] == -1) {
+                            active_words.push_back(word);
+                        }
+                        group_next[i] = group_head[word];
+                        group_head[word] = i;
+                    } else {
+                        pool_valid_words.push_back(0xFFFFFFFF); // Sentinel for end-of-document
+                    }
+                }
+
+                bool expanded = false;
+
+                for (uint32_t word : active_words) {
+                    pool_group_occs.clear();
+                    pool_unique_docs.clear();
+
+                    int curr_idx = group_head[word];
+                    while (curr_idx != -1) {
+                        pool_group_occs.push_back(current.occs[curr_idx]);
+                        pool_unique_docs.push_back(current.occs[curr_idx].doc_id);
+                        curr_idx = group_next[curr_idx];
+                    }
+
+                    // Reset grouped list head
+                    group_head[word] = -1;
+
+                    // Sort and unique to get true count
+                    std::sort(pool_unique_docs.begin(), pool_unique_docs.end());
+                    pool_unique_docs.erase(std::unique(pool_unique_docs.begin(), pool_unique_docs.end()), pool_unique_docs.end());
+
+                    if (pool_unique_docs.size() >= (size_t)min_docs) {
+                        Phrase next_p;
+                        next_p.tokens = current.tokens;
+                        next_p.tokens.push_back(word);
+                        next_p.occs = pool_group_occs; // Copy assignment preserves vector metadata correctly
+                        next_p.support = pool_unique_docs.size();
+
+                        stack.push(std::move(next_p));
+                        expanded = true;
+                    }
+                }
+                
+                auto t_ext_end = std::chrono::high_resolution_clock::now();
+                ns_extend += std::chrono::duration_cast<std::chrono::nanoseconds>(t_ext_end - t_ext_start).count();
+
+                if (!expanded) {
+                    auto t_max_start = std::chrono::high_resolution_clock::now();
+                    // Bi-directional Maximality Check
+                    if (current.tokens.size() < (size_t)params.min_l) continue;
+
+                    size_t curr_len = current.tokens.size();
+
+                    // Case A: Is current a sub-phrase of something already found?
+                    bool has_rarest = false;
+                    uint32_t rarest_token = 0;
+                    size_t min_freq = std::numeric_limits<size_t>::max();
+
+                    for (uint32_t token : current.tokens) {
+                        size_t freq = (token < inverted_index.size()) ? inverted_index[token].size() : 0;
+                        if (freq < min_freq) {
+                            min_freq = freq;
+                            rarest_token = token;
+                            has_rarest = true;
+                        }
+                    }
+
+                    bool is_sub_phrase = false;
+                    if (has_rarest && min_freq > 0) {
+                        for (size_t p_index : inverted_index[rarest_token]) {
+                            if (final_phrases[p_index].support > 0 && final_phrases[p_index].tokens.size() >= curr_len) {
+                                if (isSubArray(final_phrases[p_index].tokens, current.tokens)) {
+                                    is_sub_phrase = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!is_sub_phrase) {
+                        // Case B: Does current absorb any previously found phrases?
+                        std::vector<size_t> to_remove;
+                        size_t max_len_check = std::min(curr_len, existing_by_length.size());
+                        for (size_t len = 0; len < max_len_check; ++len) {
+                            for (size_t p_index : existing_by_length[len]) {
+                                max_loop_count++;
+                                if (final_phrases[p_index].support > 0 && isSubArray(current.tokens, final_phrases[p_index].tokens)) {
+                                    to_remove.push_back(p_index);
+                                }
+                            }
+                        }
+
+                        // Clean up absorbed phrases
+                        for (size_t p_index : to_remove) {
+                            final_phrases[p_index].support = 0; // Mark as deleted
+                            
+                            size_t del_len = final_phrases[p_index].tokens.size();
+                            if (del_len < existing_by_length.size()) {
+                                auto& vec = existing_by_length[del_len];
+                                auto it = std::find(vec.begin(), vec.end(), p_index);
+                                if (it != vec.end()) {
+                                    std::swap(*it, vec.back());
+                                    vec.pop_back();
+                                }
+                            }
+
+                            for (uint32_t token : final_phrases[p_index].tokens) {
+                                if (token < inverted_index.size()) {
+                                    auto& vec = inverted_index[token];
+                                    auto it = std::find(vec.begin(), vec.end(), p_index);
+                                    if (it != vec.end()) {
+                                        std::swap(*it, vec.back());
+                                        vec.pop_back();
+                                    }
+                                }
+                            }
+                        }
+
+                        // Mark tokens in the global processed matrix
+                        for (const auto& o : current.occs) {
+                            size_t flat_base = token_offsets[o.doc_id];
+                            size_t dlen = corpus.get_doc(o.doc_id).size();
+                            size_t limit = (o.pos + current.tokens.size() <= dlen) ? current.tokens.size() : (dlen > o.pos ? dlen - o.pos : 0);
+
+                            for (size_t k = 0; k < limit; ++k) {
+                                processed[flat_base + o.pos + k] = 1;
+                            }
+                        }
+
+                        // Add to tracking structures
+                        size_t new_index = final_phrases.size();
+                        final_phrases.push_back(std::move(current));
+                        
+                        if (curr_len >= existing_by_length.size()) {
+                            existing_by_length.resize(curr_len + 10);
+                        }
+                        existing_by_length[curr_len].push_back(new_index);
+
+                        for (uint32_t token : final_phrases.back().tokens) {
+                            if (token < inverted_index.size()) {
+                                inverted_index[token].push_back(new_index);
+                            }
+                        }
+                    }
+                    auto t_max_end = std::chrono::high_resolution_clock::now();
+                    ns_maximal += std::chrono::duration_cast<std::chrono::nanoseconds>(t_max_end - t_max_start).count();
+                }
+            }
+            if (c_idx == candidates.size() - 1) {
+                std::cout << "\n[PROFILE] Extension MS: " << (ns_extend / 1000000) << " | Maximality MS: " << (ns_maximal / 1000000) << std::endl;
             }
         }
-        if (cand.tokens.size() >= (size_t)params.min_l) {
-             final_phrases.push_back(std::move(cand));
-         }
-    }
+
     std::cout << std::endl;
     stop_timer("Expansion & Pruning", s3_start);
 
+    // Filter out logically deleted phrases
+    std::vector<Phrase> clean_final;
+    clean_final.reserve(final_phrases.size());
+    for (auto& p : final_phrases) {
+        if (p.support > 0) clean_final.push_back(std::move(p));
+    }
+    final_phrases = std::move(clean_final);
+
     size_t count_6plus = 0;
-    for (const auto& p : final_phrases)
-        if (p.tokens.size() >= 6) count_6plus++;
+    for (const auto& p : final_phrases) if (p.tokens.size() >= 6) count_6plus++;
 
     std::cout << "\n========== MINING STATISTICS ==========" << std::endl;
     std::cout << "Candidates after merge:       " << total_seeds_generated << std::endl;
@@ -718,6 +934,7 @@ std::vector<Phrase> BloomNgramMiner::mine(const CorpusMiner& corpus,
     std::cout << "=======================================\n" << std::endl;
 
     stop_timer("Total Mining Process", mine_start);
+    
 
     return final_phrases;
 }

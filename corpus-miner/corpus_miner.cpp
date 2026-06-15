@@ -397,17 +397,26 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
             if (match) paths.push_back(entry.path());
         }
 
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(paths.begin(), paths.end(), g);
-
     size_t total_files = paths.size();
-    size_t n = static_cast<size_t>(total_files * sampling);
-    if (n > total_files) n = total_files;
-    paths.resize(n);
+    size_t n = total_files;
+    
+    if (first_n > 0) {
+        std::sort(paths.begin(), paths.end());
+        n = std::min((size_t)first_n, total_files);
+        paths.resize(n);
+        std::cout << "[LOG] Found " << total_files << " .txt files. Processing first " << n << std::endl;
+    } else {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(paths.begin(), paths.end(), g);
 
-    std::cout << "[LOG] Found " << total_files << " .txt files. Processing " << n
-              << " files (sampling rate: " << (sampling * 100) << "%)" << std::endl;
+        n = static_cast<size_t>(total_files * sampling);
+        if (n > total_files) n = total_files;
+        paths.resize(n);
+
+        std::cout << "[LOG] Found " << total_files << " .txt files. Processing " << n
+                  << " files (sampling rate: " << (sampling * 100) << "%)" << std::endl;
+    }
     std::vector<std::vector<std::string>> raw_docs(n);
     if (max_threads > 0) omp_set_num_threads(max_threads);
     std::cout << "[LOG] Phase I: Parallel tokenization..." << std::endl;
@@ -506,6 +515,34 @@ void CorpusMiner::load_directory(const std::string& path, double sampling) {
         }
     word_last_doc_id.clear();
     word_last_doc_id.shrink_to_fit();
+
+    // Print statistics matching Java version
+    int numDocsProcessed = doc_lengths.size();
+    int uniqueTokens = id_to_word.size();
+    int totalTokens = 0;
+    int minDocLen = 0;
+    int maxDocLen = 0;
+    if (!doc_lengths.empty()) {
+        minDocLen = doc_lengths[0];
+        maxDocLen = doc_lengths[0];
+        for (uint32_t len : doc_lengths) {
+            totalTokens += len;
+            if (len < (uint32_t)minDocLen) minDocLen = len;
+            if (len > (uint32_t)maxDocLen) maxDocLen = len;
+        }
+    }
+    double avgDocLen = numDocsProcessed > 0 ? (double)totalTokens / numDocsProcessed : 0;
+    
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", avgDocLen);
+    
+    std::cout << "numDocsProcessed=" << numDocsProcessed << "\n"
+              << "uniqueTokens=" << uniqueTokens << "\n"
+              << "totalTokens=" << totalTokens << "\n"
+              << "minDocLen=" << minDocLen << "\n"
+              << "maxDocLen=" << maxDocLen << "\n"
+              << "avgDocLen=" << buf << std::endl;
+
     stop_timer("Dictionary, Encoding & DF counting", p2_start);
     stop_timer("Total Loading", total_start);
 }

@@ -16,10 +16,14 @@ public:
                              const MiningParams& params) override;
 
 private:
-    // Signatures updated to use SupportInfo to match the .cpp implementation
-    bool is_forward_closed(int current_sup, const std::unordered_map<uint32_t, SupportInfo>& extensions);
+    bool has_backward_extension(const CorpusMiner& corpus,
+                                const std::vector<uint32_t>& patt,
+                                const std::vector<Occurrence>& matches);
 
-    bool is_backward_closed(const CorpusMiner& corpus,
-                            const std::vector<uint32_t>& patt,
-                            const std::vector<Occurrence>& matches);
+    bool has_frequent_backward_extension(const CorpusMiner& corpus,
+                                         const std::vector<uint32_t>& patt,
+                                         const std::vector<Occurrence>& matches,
+                                         int min_sup);
+
+    int get_unique_docs(const std::vector<Occurrence>& occs);
 };

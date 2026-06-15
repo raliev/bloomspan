@@ -52,11 +52,12 @@ inline std::vector<std::string> tokenize(const std::string& text) {
 
     for (size_t i = 0; i < text.length(); ++i) {
         unsigned char c = static_cast<unsigned char>(text[i]);
-        if (c > 127 || std::isalnum(c)) {
+        if (std::isspace(c)) {
+            if (!current.empty()) { tokens.push_back(current); current.clear(); }
+        } else {
+            // Lowercase A-Z like Java's toLowerCase for ASCII
             if (c >= 'A' && c <= 'Z') current += static_cast<char>(c + ('a' - 'A'));
             else current += static_cast<char>(c);
-        } else {
-            if (!current.empty()) { tokens.push_back(current); current.clear(); }
         }
     }
     if (!current.empty()) tokens.push_back(current);
@@ -69,18 +70,17 @@ inline std::vector<std::string> tokenize_utf16(const std::u16string& text) {
     std::u16string current;
 
     for (char16_t c : text) {
-        // Simple check: is it a basic multilingual plane alphanumeric?
-        // For full Unicode support, consider using a library like ICU
-        bool is_alnum = (c < 128) ? std::isalnum(static_cast<unsigned char>(c)) : true;
-
-        if (is_alnum) {
-            if (c >= u'A' && c <= u'Z') current += static_cast<char16_t>(c + (u'a' - u'A'));
-            else current += c;
-        } else {
+        bool is_space = false;
+        if (c < 128) is_space = std::isspace(static_cast<unsigned char>(c));
+        
+        if (is_space) {
             if (!current.empty()) {
                 tokens.push_back(utf16_to_utf8(current));
                 current.clear();
             }
+        } else {
+            if (c >= u'A' && c <= u'Z') current += static_cast<char16_t>(c + (u'a' - u'A'));
+            else current += c;
         }
     }
     if (!current.empty()) tokens.push_back(utf16_to_utf8(current));

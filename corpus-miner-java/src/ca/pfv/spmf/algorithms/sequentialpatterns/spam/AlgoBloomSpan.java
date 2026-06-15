@@ -52,10 +52,11 @@ public class AlgoBloomSpan {
                 + this.ngrams);
 
         long totalWords = database.stream().mapToLong(seq -> seq.length).sum();
-        int maxFilterSize = 1024 * 1024 * 512;
-
-        int filterSize = (int) Math.min((long) maxFilterSize, Math.max(1024 * 1024, totalWords * 8));
-        long filterSizeMB = Math.max(1, filterSize / (1024 * 1024));
+        int oneMb = 1024 * 1024;
+        int maxFilterSize = 512 * oneMb;
+        int loadFactor = 8;
+        int filterSize = (int) Math.min((long) maxFilterSize, Math.max(oneMb, totalWords * loadFactor));
+        long filterSizeMB = Math.max(1, filterSize / oneMb);
         System.out.println("[LOG] Initializing Bloom Filter: " + filterSize + " bytes (~" + filterSizeMB + " MB)");
         byte[] filterCounters = new byte[filterSize];
         System.out.println("[LOG] Bloom Pass: Estimating n-gram frequencies...");
@@ -87,7 +88,6 @@ public class AlgoBloomSpan {
         Arrays.parallelSort(seedArray);
         List<Phrase> candidates = mergeSeeds(seedArray);
         seedArray = null;
-
 
         long s1End = System.currentTimeMillis();
         System.out.printf("[TIMER] %d-gram Seed Generation (Disk): %.5f seconds\n", this.ngrams,
@@ -166,7 +166,7 @@ public class AlgoBloomSpan {
     }
 
     private void estimateFrequencies(byte[] filter) {
-        IntStream.range(0, database.size()).parallel().forEach(d -> {
+        IntStream.range(0, database.size()).forEach(d -> {
             int[] seq = database.get(d);
             if (seq.length < ngrams)
                 return;
@@ -278,7 +278,9 @@ public class AlgoBloomSpan {
         for (int i = 0; i < database.size(); i++)
             processed[i] = new boolean[database.get(i).length];
 
-        List<Phrase> finalPhrases = new ArrayList<>();
+        LinkedHashSet<Phrase> finalPhrases = new LinkedHashSet<>();
+        Map<Integer, Set<Phrase>> existingByLength = new HashMap<>();
+        Map<Integer, Set<Phrase>> invertedIndex = new HashMap<>();
 
         int cIdx = 0;
         for (Phrase cand : candidates) {
@@ -288,26 +290,36 @@ public class AlgoBloomSpan {
             }
             cIdx++;
 
-            // Pruning: skip seed if all its tokens in all occurrences are already covered
-            boolean allProcessed = true;
-            for (Occurrence o : cand.occs) {
-                for (int i = 0; i < cand.tokens.length; i++) {
-                    if (!processed[o.docId][o.pos + i]) {
-                        allProcessed = false;
-                        break;
-                    }
-                }
-                if (!allProcessed)
-                    break;
-            }
-            if (allProcessed)
-                continue;
-
             Stack<Phrase> stack = new Stack<>();
             stack.push(cand);
             MemoryLogger.getInstance().checkMemory();
             while (!stack.isEmpty()) {
                 Phrase current = stack.pop();
+
+                // A. Backward-extension check (Local Pruning)
+                boolean canExtendLeft = false;
+                if (!current.occs.isEmpty()) {
+                    int firstDoc = current.occs.get(0).docId;
+                    int firstPos = current.occs.get(0).pos;
+                    if (firstPos > 0) {
+                        int commonPrev = database.get(firstDoc)[firstPos - 1];
+                        boolean allMatch = true;
+                        for (Occurrence o : current.occs) {
+                            if (o.pos == 0 || database.get(o.docId)[o.pos - 1] != commonPrev) {
+                                allMatch = false;
+                                break;
+                            }
+                        }
+                        if (allMatch) {
+                            canExtendLeft = true;
+                        }
+                    }
+                }
+
+                if (canExtendLeft) {
+                    continue; // Prune branch completely
+                }
+
                 Map<Integer, List<Occurrence>> extensions = new HashMap<>();
 
                 for (Occurrence o : current.occs) {
@@ -337,7 +349,7 @@ public class AlgoBloomSpan {
 
                 if (!expanded) {
                     // 3. Bi-directional Maximality Check
-                    if (isMaximal(current, finalPhrases)) {
+                    if (isMaximal(current, finalPhrases, existingByLength, invertedIndex)) {
                         // Mark tokens in the global processed matrix
                         for (Occurrence o : current.occs) {
                             for (int k = 0; k < current.tokens.length; k++) {
@@ -346,6 +358,10 @@ public class AlgoBloomSpan {
                             }
                         }
                         finalPhrases.add(current);
+                        existingByLength.computeIfAbsent(current.tokens.length, k -> new HashSet<>()).add(current);
+                        for (int t : current.tokens) {
+                            invertedIndex.computeIfAbsent(t, k -> new HashSet<>()).add(current);
+                        }
                     }
                 }
                 MemoryLogger.getInstance().checkMemory();
@@ -353,57 +369,98 @@ public class AlgoBloomSpan {
         }
 
         patternCount = finalPhrases.size();
-        return finalPhrases;
+        return new ArrayList<>(finalPhrases);
     }
 
-    private boolean isMaximal(Phrase current, List<Phrase> existing) {
+    private boolean isMaximal(Phrase current, Set<Phrase> finalPhrases, Map<Integer, Set<Phrase>> existingByLength,
+            Map<Integer, Set<Phrase>> invertedIndex) {
         if (current.tokens.length < minL)
             return false;
 
-        // A. Backward-extension check (Local)
-        if (!current.occs.isEmpty()) {
-            int firstDoc = current.occs.get(0).docId;
-            int firstPos = current.occs.get(0).pos;
-            if (firstPos > 0) {
-                int commonPrev = database.get(firstDoc)[firstPos - 1];
-                boolean allMatch = true;
-                for (Occurrence o : current.occs) {
-                    if (o.pos == 0 || database.get(o.docId)[o.pos - 1] != commonPrev) {
-                        allMatch = false;
-                        break;
-                    }
-                }
-                if (allMatch)
-                    return false;
+        int currLen = current.tokens.length;
+
+        // Case A: Is current a sub-phrase of something already found?
+        Integer rarestToken = null;
+        int minFreq = Integer.MAX_VALUE;
+        for (int token : current.tokens) {
+            Set<Phrase> phrasesWithToken = invertedIndex.get(token);
+            int freq = (phrasesWithToken == null) ? 0 : phrasesWithToken.size();
+            if (freq < minFreq) {
+                minFreq = freq;
+                rarestToken = token;
             }
         }
 
-        // B. Global Bi-directional Check (Matching C++ search logic)
-        Iterator<Phrase> it = existing.iterator();
-        while (it.hasNext()) {
-            Phrase p = it.next();
-            // If current is a sub-phrase of something already found, current is not maximal
-            if (p.tokens.length >= current.tokens.length) {
-                if (isSubArray(p.tokens, current.tokens))
-                    return false;
+        if (rarestToken != null && minFreq > 0) {
+            Set<Phrase> candidateSuperPhrases = invertedIndex.get(rarestToken);
+            for (Phrase p : candidateSuperPhrases) {
+                if (p.tokens.length >= currLen) {
+                    if (isSubArray(p.tokens, current.tokens)) {
+                        return false;
+                    }
+                }
             }
-            // If something found earlier is a sub-phrase of current, remove it
-            if (current.tokens.length > p.tokens.length) {
-                if (isSubArray(current.tokens, p.tokens)) {
-                    it.remove();
-                    patternCount--;
+        } else if (minFreq == 0) {
+            // Cannot be a subarray of any existing phrase if it contains a completely novel
+            // token
+        }
+
+        // Case B: Does current absorb any previously found phrases?
+        List<Phrase> toRemove = new ArrayList<>();
+        for (Map.Entry<Integer, Set<Phrase>> entry : existingByLength.entrySet()) {
+            if (entry.getKey() < currLen) {
+                for (Phrase p : entry.getValue()) {
+                    if (isSubArray(current.tokens, p.tokens)) {
+                        toRemove.add(p);
+                    }
                 }
             }
         }
+
+        // Clean up absorbed phrases from all tracking structures
+        for (Phrase p : toRemove) {
+            finalPhrases.remove(p);
+            existingByLength.get(p.tokens.length).remove(p);
+            for (int token : p.tokens) {
+                Set<Phrase> phrasesWithToken = invertedIndex.get(token);
+                if (phrasesWithToken != null) {
+                    phrasesWithToken.remove(p);
+                    if (phrasesWithToken.isEmpty()) {
+                        invertedIndex.remove(token);
+                    }
+                }
+            }
+        }
+
         return true;
     }
 
     private boolean isSubArray(int[] larger, int[] smaller) {
+        if (smaller.length == 0)
+            return true;
         if (smaller.length > larger.length)
             return false;
-        for (int i = 0; i <= larger.length - smaller.length; i++) {
+
+        // Early pruning: check if the first token exists anywhere in the larger array
+        int firstToken = smaller[0];
+        boolean foundFirst = false;
+        int maxStart = larger.length - smaller.length;
+        for (int i = 0; i <= maxStart; i++) {
+            if (larger[i] == firstToken) {
+                foundFirst = true;
+                break;
+            }
+        }
+        if (!foundFirst) {
+            return false;
+        }
+
+        // Nested matching
+        for (int i = 0; i <= maxStart; i++) {
+            if (larger[i] != firstToken)
+                continue;
             boolean match = true;
-            for (int j = 0; j < smaller.length; j++) {
+            for (int j = 1; j < smaller.length; j++) {
                 if (larger[i + j] != smaller[j]) {
                     match = false;
                     break;

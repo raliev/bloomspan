@@ -1,12 +1,34 @@
-# Automated Discovery of Invariant Document Fragments
+# BloomSpan: Memory-Efficient Maximal Frequent Substring Mining for Large-Scale Text
 
-This repository presents a novel, scalable seed-and-expand algorithm for the automated discovery of maximal non-gapped sequential patterns within massive textual corpora. 
-
-Established sequential pattern mining frameworks—such as PrefixSpan and BIDE—lack the necessary heuristics to directly isolate the longest most frequent sequences, often resulting in fragmented and redundant outputs. 
-
-Our approach specializes in identifying Maximal Frequent Phrases—the longest contiguous substrings meeting a specific document support threshold—through an iterative greedy expansion model. The algorithm utilizes a multi-phase pipeline involving dictionary-encoded tokenization and aggressive probabilistic pruning via a Counting Bloom Filter to isolate high-potential n-gram seeds. To maintain maximality and prevent redundancy, a global occupancy bitmask is employed to track token-level coverage. By specializing in contiguous substrings and avoiding recursive projections in favor of a priority-based expansion path, the proposed methodology is at least an order of magnitude faster than traditional sequential pattern mining baselines.
+This repository presents BloomSpan, a memory-efficient algorithm for mining Maximal Contiguous Frequent Phrases (MCFPs) from large text corpora. MCFPs are strictly contiguous token sequences satisfying a minimum document-support threshold; unlike general Sequential Pattern Mining, no gaps are permitted. BloomSpan combines a Counting Bloom Filter for probabilistic frequency estimation with prioritized seed generation and depth-first expansion directly on the corpus, avoiding recursive projected databases. Seed generation is provably free of false negatives; output equivalence with exact baselines is confirmed on all Gutenberg-8k subsets where any baseline completes. On the Gutenberg-BookCorpus-Cleaned corpus (up to 3.07B tokens), BloomSpan achieves 11-15x faster wall-clock execution than FHK with up to 2x lower peak memory.
 
 ## Getting Started
+
+### java version
+
+Compiling (tested with JDK 21):
+```bash
+cd corpus-miner-java
+./build.sh
+```
+
+Running (from `corpus-miner-java/`):
+```bash
+java -cp "../spmf-jar/spmf.jar:extensions.jar" com.bloomspan.benchmarks.BenchmarkRunner \
+  <algo> <folder> <minSupportAbs> <minLen> <outputCsv> [maxDocs]
+```
+
+Example with the included test corpus:
+```bash
+java -cp "../spmf-jar/spmf.jar:extensions.jar" com.bloomspan.benchmarks.BenchmarkRunner \
+  bloomspan test_docs 2 3 out.csv
+```
+
+Available algorithms: `bloomspan`, `vmsp`, `gst`, `bidecontiguous`, `bidecontiguousmaximal`, `fhk`, `dfi`
+
+
+
+### C++ version
 
 ```bash
 cd corpus_miner

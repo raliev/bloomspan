@@ -40,7 +40,7 @@
 
     The identification of frequent patterns within large sequences is a cornerstone problem in data mining. General Sequential Pattern Mining (SPM) algorithms such as GSP~\cite{agrawal1995mining} and PrefixSpan~\cite{pei2001prefixspan} allow arbitrary gaps between elements and treat each element as a set (itemset). While mathematically powerful, this generality is a liability in domains such as document template extraction, plagiarism detection, and phrase mining, where patterns are single tokens forming rigid, unbroken structures. Introducing gaps into such searches leads to a \emph{combinatorial explosion} of meaningless candidates: given a sequence $\langle A, B, C \rangle$, an SPM miner considers the pattern present even when elements appear as $A \dots \text{gap} \dots B \dots \text{gap} \dots C$, generating orders of magnitude more candidates than the contiguous case requires. The Maximal Contiguous Frequent Phrase (MCFP) mining problem~\cite{fischer2006fast} captures the constrained setting where no gap is allowed and each element is a single token.
 
-    Practitioners navigating this problem face a dichotomy of extremes. \emph{Stringology-native suffix-array miners} build on decades of index engineering starting with Manber and Myers' suffix array~\cite{manber1993suffix}, Kasai et al.'s linear-time LCP construction~\cite{kasai2001linear}, and the enhanced suffix array framework of Abouelhoda, Kurtz, and Ohlebusch~\cite{abouelhoda2004replacing}; practical deployments further rely on Nong--Zhang--Chan's SA-IS suffix array construction~\cite{nong2011saiis} and, for compressed settings, on the FM-index and related self-indexes surveyed by Navarro and M\"akinen~\cite{navarro2007compressed}. Specifically for substring mining, the Fischer--Heun--Kramer algorithm (FHK)~\cite{fischer2005icdm,fischer2009dami}, the Deferred Frequency Index (DFI~\cite{weese2008dfi}), and related work~\cite{kugel2008space,dhaliwal2012practical,fischer2008space} solve MCFP in asymptotically optimal time but carry constant factors that become significant on large natural-language alphabets and permissive operating points. Recent work at SPIRE~2024 continues to refine this line, including online~\cite{guo2024netfreq} and faster offline~\cite{ohlebusch2024chinese} computation of closely related net-frequency queries. BloomSpan complements this line by moving orthogonally: it targets a document-frequency constraint on a bounded-memory probabilistic substrate rather than an exact index, trading worst-case guarantees for empirical memory savings on large natural-language corpora. \emph{Gap-aware sequence miners} (BIDE+~\cite{wang2004bide}, VMSP~\cite{fournier2014vmsp}) solve a strictly more general problem and manage a much larger search space, incurring severe memory pressure when restricted to contiguous extensions.
+    Practitioners navigating this problem face a dichotomy of extremes. \emph{Stringology-native suffix-array miners} build on decades of index engineering starting with Manber and Myers' suffix array~\cite{manber1993suffix}, Kasai et al.'s linear-time LCP construction~\cite{kasai2001linear}, and the enhanced suffix array framework of Abouelhoda, Kurtz, and Ohlebusch~\cite{abouelhoda2004replacing}; practical deployments further rely on Nong--Zhang--Chan's SA-IS suffix array construction~\cite{nong2011saiis} and, for compressed settings, on the FM-index and related self-indexes surveyed by Navarro and M\"akinen~\cite{navarro2007compressed}. Specifically for substring mining, the Fischer--Heun--Kramer algorithm (FHK)~\cite{fischer2005icdm}, the Deferred Frequency Index (DFI~\cite{weese2008dfi}), and related work~\cite{kugel2008space,dhaliwal2012practical,fischer2008space} solve MCFP in asymptotically optimal time but carry constant factors that become significant on large natural-language alphabets and permissive operating points. Recent work at SPIRE~2024 continues to refine this line, including online~\cite{guo2024netfreq} and faster offline~\cite{ohlebusch2024chinese} computation of closely related net-frequency queries. BloomSpan complements this line by moving orthogonally: it targets a document-frequency constraint on a bounded-memory probabilistic substrate rather than an exact index, trading worst-case guarantees for empirical memory savings on large natural-language corpora. \emph{Gap-aware sequence miners} (BIDE+~\cite{wang2004bide}, VMSP~\cite{fournier2014vmsp}) solve a strictly more general problem and manage a much larger search space, incurring severe memory pressure when restricted to contiguous extensions.
 
     We present \emph{BloomSpan}, which occupies a distinct operating point between these families: a Counting Bloom Filter bypasses explicit candidate generation, while a depth-first expansion with a global occupancy bitmask bounds memory to $O(W + M)$ in the input size. Our main contributions are:  (1) an algorithm whose runtime decomposes into an input-linear pre-processing component and a data-dependent expansion component, scaling near-linearly per token on a 3 billion-token natural-language corpus at strict thresholds ($\sigma \geq 20$); (2) a probabilistic seed-filtering mechanism that provably produces no false negatives.
 
@@ -60,24 +60,24 @@
     \section{Proposed Algorithm: BloomSpan}
 
     \begin{algorithm}[t]
-\caption{BloomSpan (top-level)}
-\label{alg:bloomspan}
-\begin{algorithmic}[1]
-    \Require Corpus $\mathcal{C}$, support threshold $\sigma$, seed length $n$, minimum phrase length $\ell_{\min}$
-    \Ensure Set $\mathcal{M}$ of MCFPs
-    \State $\mathit{df}_1 \gets$ exact 1-gram document frequencies over $\mathcal{C}$
-    \State $\hat{c} \gets$ CBF populated with all length-$n$ windows of $\mathcal{C}$
-    \State $\mathcal{S} \gets \{ S : \hat{c}(S) \geq \sigma \wedge \min_{t \in S} \mathit{df}_1(t) \geq \sigma \}$ \Comment{seed candidates}
-    \State $\mathcal{S}' \gets$ merge $\mathcal{S}$ by exact $df$, keep those with $df \geq \sigma$
-    \State sort $\mathcal{S}'$ by $\Psi(S) = |S| \cdot df(S)$ desc., then length desc., then lex.
-    \State $\mathit{occupied} \gets$ all-zeros bitmask over $\sum_d |d|$ positions
-    \State $\mathcal{M} \gets \emptyset$
-    \For{each candidate $S \in \mathcal{S}'$ in order}
-        \If{all occurrences of $S$ lie in $\mathit{occupied}$ positions} \textbf{continue} \EndIf
-        \State DFS-Expand($S$, $\mathit{occupied}$, $\mathcal{M}$) \Comment{Algorithm 2}
-    \EndFor
-    \State \Return $\mathcal{M}$
-\end{algorithmic}
+        \caption{BloomSpan (top-level)}
+        \label{alg:bloomspan}
+        \begin{algorithmic}[1]
+            \Require Corpus $\mathcal{C}$, support threshold $\sigma$, seed length $n$, minimum phrase length $\ell_{\min}$
+            \Ensure Set $\mathcal{M}$ of MCFPs
+            \State $\mathit{df}_1 \gets$ exact 1-gram document frequencies over $\mathcal{C}$
+            \State $\hat{c} \gets$ CBF populated with all length-$n$ windows of $\mathcal{C}$
+            \State $\mathcal{S} \gets \{ S : \hat{c}(S) \geq \sigma \wedge \min_{t \in S} \mathit{df}_1(t) \geq \sigma \}$ \Comment{seed candidates}
+            \State $\mathcal{S}' \gets$ merge $\mathcal{S}$ by exact $df$, keep those with $df \geq \sigma$
+            \State sort $\mathcal{S}'$ by $\Psi(S) = |S| \cdot df(S)$ desc., then length desc., then lex.
+            \State $\mathit{occupied} \gets$ all-zeros bitmask over $\sum_d |d|$ positions
+            \State $\mathcal{M} \gets \emptyset$
+            \For{each candidate $S \in \mathcal{S}'$ in order}
+                \If{all occurrences of $S$ lie in $\mathit{occupied}$ positions} \textbf{continue} \EndIf
+                \State DFS-Expand($S$, $\mathit{occupied}$, $\mathcal{M}$) \Comment{Algorithm 2}
+            \EndFor
+            \State \Return $\mathcal{M}$
+        \end{algorithmic}
     \end{algorithm}
 
     BloomSpan transitions from pattern-growth projection trees to a prioritized Depth-First Search (DFS) combined with probabilistic filtering. It operates in four phases.
@@ -115,7 +115,7 @@
 
     \subsection{Baselines}
     \begin{enumerate}
-        \item \textbf{FHK} --- in-house Java implementation of Fischer--Heun--Kramer~\cite{fischer2006fast,fischer2009dami}: SA-IS suffix array~\cite{nong2011saiis}, Kasai LCP array~\cite{kasai2001linear}, stack-based bottom-up LCP-interval traversal.
+        \item \textbf{FHK} --- in-house Java implementation of Fischer--Heun--Kramer~\cite{fischer2005icdm,fischer2006fast}: SA-IS suffix array~\cite{nong2011saiis}, Kasai LCP array~\cite{kasai2001linear}, stack-based bottom-up LCP-interval traversal.
         \item \textbf{DFI} --- in-house Java implementation of the Deferred Frequency Index~\cite{weese2008dfi}: same SA-IS + Kasai preprocessing, top-down DFS with early subtree pruning and an $O(n \log n)$ RMQ sparse table.
         \item \textbf{GST/SA+LCP} --- suffix-array baseline from SPMF.
         \item \textbf{VMSP} --- maximal sequential pattern miner from SPMF~\cite{fournier2014vmsp}; included as a sanity check.
